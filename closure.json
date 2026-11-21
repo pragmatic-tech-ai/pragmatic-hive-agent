@@ -1,0 +1,7 @@
+{
+  "pragmatic-hive-agent": {
+    "entrypoint": ["node", "dist/bin/pragmatic-agentd.js"],
+    "packages": [],
+    "files": ["pragmatic-hive-agent/package.json", "pragmatic-hive-agent/node_modules", "pragmatic-hive-agent/dist"]
+  }
+}

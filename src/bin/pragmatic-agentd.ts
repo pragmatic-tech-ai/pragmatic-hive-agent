@@ -1,1 +1,1 @@
-import '../agent/agent-main.js'
+import '../agent-main.js'
