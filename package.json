@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "description": "The hive agent (pragmatic-agentd): polls the platform agent channel and rolls the hive's environment deployments to their target images.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pragmatic-tech-ai/pragmatic-hive-agent.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.5"
@@ -13,12 +18,12 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json"
   },
   "dependencies": {
-    "@pragmatic-tech-ai/pragmatic-component": "^0.17.6",
-    "@pragmatic-tech-ai/pragmatic-kube": "^0.17.6",
-    "@pragmatic-tech-ai/pragmatic-observability": "^0.17.6"
+    "@pragmatic-tech-ai/pragmatic-component": "^0.17.7",
+    "@pragmatic-tech-ai/pragmatic-kube": "^0.17.7",
+    "@pragmatic-tech-ai/pragmatic-observability": "^0.17.7"
   },
   "devDependencies": {
-    "@pragmatic-tech-ai/pragmatic-release-toolkit": "^0.17.6",
+    "@pragmatic-tech-ai/pragmatic-release-toolkit": "^0.17.7",
     "@types/node": "^22.20.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.0"
