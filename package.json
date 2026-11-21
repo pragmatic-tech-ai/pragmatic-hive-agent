@@ -13,12 +13,12 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json"
   },
   "dependencies": {
-    "@pragmatic-tech-ai/pragmatic-component": "^0.17.2",
-    "@pragmatic-tech-ai/pragmatic-kube": "^0.17.2",
-    "@pragmatic-tech-ai/pragmatic-observability": "^0.17.2"
+    "@pragmatic-tech-ai/pragmatic-component": "^0.17.4",
+    "@pragmatic-tech-ai/pragmatic-kube": "^0.17.4",
+    "@pragmatic-tech-ai/pragmatic-observability": "^0.17.4"
   },
   "devDependencies": {
-    "@pragmatic-tech-ai/pragmatic-release-toolkit": "^0.17.2",
+    "@pragmatic-tech-ai/pragmatic-release-toolkit": "^0.17.4",
     "@types/node": "^22.20.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.0"
