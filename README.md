@@ -14,6 +14,11 @@ variables and component descriptor are unchanged. It stays dependency-light: nod
 `PRAGMATIC_AGENT_POLL_INTERVAL_MS` (default 30000), `PRAGMATIC_AGENT_MAX_BACKOFF_MS` (default 300000). The Kubernetes
 API is reached through the pod's service account.
 
+At start the mounted `pragmatic-config-pragmatic-hive-agent` (the tenant admin console's applied configuration) is laid
+over these variables; one the agent cannot start with exits 78 with the reason. Only the poll timing is configurable
+there: the channel, the hive and the token are the platform's (`PRAGMATIC_AGENT_TOKEN_FILE` names the token's file when
+it is mounted rather than injected).
+
 ## Development
 
 Packages come from GitHub Packages (`@pragmatic-tech-ai` scope, `.npmrc` reads the token from `NODE_AUTH_TOKEN`).

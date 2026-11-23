@@ -14,7 +14,7 @@ class PackageDepsFixture
     public static readonly Utf8 = 'utf8'
     public static readonly Forbidden: readonly string[] = ['@pragmatic-tech-ai/todl', '@pragmatic-tech-ai/todl-runtime', '@pragmatic-tech-ai/mural']
     public static readonly Dependencies: readonly string[] = [
-        '@pragmatic-tech-ai/pragmatic-component', '@pragmatic-tech-ai/pragmatic-kube', '@pragmatic-tech-ai/pragmatic-observability',
+        '@pragmatic-tech-ai/pragmatic-component', '@pragmatic-tech-ai/pragmatic-configuration-runtime', '@pragmatic-tech-ai/pragmatic-kube', '@pragmatic-tech-ai/pragmatic-observability',
     ]
     public static readonly DependencyFields: readonly string[] = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
 
@@ -76,7 +76,7 @@ describe('package dependencies', () =>
         }
     })
 
-    it('the runtime dependencies are exactly pragmatic-component, pragmatic-kube and pragmatic-observability', () =>
+    it('the runtime dependencies are exactly pragmatic-component, pragmatic-configuration-runtime, pragmatic-kube and pragmatic-observability', () =>
     {
         assert.deepEqual(F.Declared(F.DependencyFields[0]).sort(), [...F.Dependencies].sort())
     })

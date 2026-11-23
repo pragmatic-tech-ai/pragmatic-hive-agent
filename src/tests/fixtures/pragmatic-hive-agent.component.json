@@ -1,33 +1,12 @@
 {
   "schema": 1,
   "component": "pragmatic-hive-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "options": [
     {
       "name": "core",
       "description": "The rollout agent of one hive.",
       "settings": [
-        {
-          "name": "registryUrl",
-          "type": "url",
-          "required": true,
-          "secret": false,
-          "description": "PRAGMATIC_AGENT_REGISTRY_URL: Base URL of the platform agent channel."
-        },
-        {
-          "name": "hiveId",
-          "type": "string",
-          "required": true,
-          "secret": false,
-          "description": "PRAGMATIC_AGENT_HIVE_ID: The hive this agent serves."
-        },
-        {
-          "name": "token",
-          "type": "string",
-          "required": true,
-          "secret": true,
-          "description": "PRAGMATIC_AGENT_TOKEN: The bearer token of this hive on the agent channel."
-        },
         {
           "name": "pollIntervalMs",
           "type": "integer",

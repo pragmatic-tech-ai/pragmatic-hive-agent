@@ -1,3 +1,6 @@
+import { ComponentStartConfiguration } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
+import { AgentSettings } from './agent-settings.js'
+import { HiveAgentComponent } from './hive-agent-component.js'
 import { InClusterK8sApi } from './k8s-api.js'
 import { AgentWiring } from './agent-wiring.js'
 import { BoundedFetch } from './bounded-fetch.js'
@@ -6,13 +9,6 @@ import { StructuredLogger, type ILogger } from '@pragmatic-tech-ai/pragmatic-obs
 
 class AgentMain
 {
-    private static readonly RegistryUrlEnv = 'PRAGMATIC_AGENT_REGISTRY_URL'
-    private static readonly HiveIdEnv = 'PRAGMATIC_AGENT_HIVE_ID'
-    private static readonly TokenEnv = 'PRAGMATIC_AGENT_TOKEN'
-    private static readonly PollIntervalEnv = 'PRAGMATIC_AGENT_POLL_INTERVAL_MS'
-    private static readonly MaxBackoffEnv = 'PRAGMATIC_AGENT_MAX_BACKOFF_MS'
-    private static readonly DefaultPollIntervalMs = 30000
-    private static readonly DefaultMaxBackoffMs = 300000
     private static readonly BackoffFactor = 2
     private static readonly RequestTimeoutMs = 10000
 
@@ -22,8 +18,6 @@ class AgentMain
     private static readonly JsonType = 'application/json'
     private static readonly PostMethod = 'POST'
     private static readonly NotFound = 404
-    private static readonly TrailingSlash = /\/+$/
-    private static readonly Empty = ''
 
     private static readonly RegistryFailurePrefix = 'registry request failed with status '
     private static readonly TickFailedPrefix = 'rollout tick failed: '
@@ -44,12 +38,11 @@ class AgentMain
 
     public static async Run(): Promise<void>
     {
+        // First of all: the applied configuration (the mounted pragmatic-config-pragmatic-hive-agent) over the environment.
+        await ComponentStartConfiguration.ApplyOrExit({ Declaration: HiveAgentComponent.Declaration, Env: process.env })
         const logger = StructuredLogger.ToStdout()
-        const registryUrl = AgentWiring.Required(AgentMain.RegistryUrlEnv).replace(AgentMain.TrailingSlash, AgentMain.Empty)
-        const hiveId = AgentWiring.Required(AgentMain.HiveIdEnv)
-        const token = AgentWiring.Required(AgentMain.TokenEnv)
-        const pollMs = AgentMain.PositiveInt(AgentMain.PollIntervalEnv, AgentMain.DefaultPollIntervalMs)
-        const maxBackoffMs = AgentMain.PositiveInt(AgentMain.MaxBackoffEnv, AgentMain.DefaultMaxBackoffMs)
+        const settings = AgentSettings.From(process.env)
+        const { RegistryUrl: registryUrl, HiveId: hiveId, Token: token, PollMs: pollMs, MaxBackoffMs: maxBackoffMs } = settings
 
         const k8s = new InClusterK8sApi()
         const selector = AgentWiring.LabelSelector(hiveId)
@@ -126,12 +119,6 @@ class AgentMain
     private static TimedFetch<T>(url: string, init: RequestInit, consume: (response: Response) => Promise<T>): Promise<T>
     {
         return BoundedFetch.Run(url, init, AgentMain.RequestTimeoutMs, consume)
-    }
-
-    private static PositiveInt(key: string, fallback: number): number
-    {
-        const parsed = Number(process.env[key])
-        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
     }
 }
 

@@ -7,14 +7,14 @@ import { ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { Components } from '../src/release-components.js'
 import { ComponentGolden } from '../src/tests/component-golden.js'
 
-/** The descriptor the image carries, pinned to pragmatic-server's golden (admin/control-plane/descriptors/digests.json). */
+/** The descriptor the image carries, pinned (it moves with the declaration and the package version). */
 class DescriptorGoldenFixture
 {
     public static readonly Here = dirname(fileURLToPath(import.meta.url))
     public static readonly App = ReleaseApp.HiveAgent
     public static readonly Golden = join(DescriptorGoldenFixture.Here, '..', 'src', 'tests', 'fixtures', 'pragmatic-hive-agent.component.json')
-    /** pragmatic-server@2a2e8138's pin for pragmatic-hive-agent. */
-    public static readonly PinnedDigest = 'sha256:8a59fe48b0e4d9f3fe7445a637d176d31a2b2009822de18dc1f17d4227267eff'
+    /** The same pin as src/tests/hive-agent-component.test.ts. */
+    public static readonly PinnedDigest = 'sha256:94b0602d53e381f998add433ccd190e23a4bedec912eef916d719c9feacd1909'
     public static readonly PackageJson = join(DescriptorGoldenFixture.Here, '..', 'package.json')
     public static readonly Utf8 = 'utf8'
 
