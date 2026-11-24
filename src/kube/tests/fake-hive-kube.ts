@@ -41,6 +41,11 @@ export class FakeHiveKube implements IHiveKube
         return true
     }
 
+    public async DeleteSecret(namespace: string, name: string): Promise<void>
+    {
+        this.Secrets.delete(FakeHiveKube.Key(namespace, name))
+    }
+
     public async GetConfigMap(namespace: string, name: string): Promise<KubeConfigMap | undefined>
     {
         return this.ConfigMaps.get(FakeHiveKube.Key(namespace, name))

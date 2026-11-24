@@ -43,6 +43,15 @@ describe('InClusterHiveKube', () =>
         assert.equal(created.data['hive-key.pem'], Buffer.from('PEM').toString('base64'))
     })
 
+    it('deletes a Secret by name; a 404 is done, any other failure throws', async () =>
+    {
+        const kube = new RecordingHiveKube([{ status: 200, body: {} }, { status: 404, body: {} }, { status: 403, body: {} }])
+        await kube.DeleteSecret('pragmatic-system', 'pragmatic-hive-enrolment-code')
+        await kube.DeleteSecret('pragmatic-system', 'pragmatic-hive-enrolment-code')
+        await assert.rejects(kube.DeleteSecret('pragmatic-system', 'pragmatic-hive-enrolment-code'), /status 403/)
+        assert.deepEqual([kube.Requests[0]?.Method, kube.Requests[0]?.Path], ['DELETE', '/api/v1/namespaces/pragmatic-system/secrets/pragmatic-hive-enrolment-code'])
+    })
+
     it('creates a ConfigMap without a version and replaces it with one', async () =>
     {
         const kube = new RecordingHiveKube([{ status: 201, body: {} }, { status: 200, body: {} }, { status: 200, body: { data: { k: 'v' }, metadata: { resourceVersion: '7' } } }])

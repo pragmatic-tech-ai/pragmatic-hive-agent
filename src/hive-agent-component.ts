@@ -4,7 +4,8 @@ import { SettingType, type ComponentDescriptor, ComponentDeclarations, type Comp
 /**
  * The component descriptor of the hive agent image (pragmatic-agentd): what `AgentSettings` reads that a tenant may
  * configure. It polls the platform's agent channel and patches the hive's deployments, stores nothing, and (installed by
- * the chart, level connected) serves the engine console's internal enrolment API on 7210. The channel, the hive, the
+ * the chart, level connected) serves the engine console's internal enrolment API on 7210 (a Hosted engine, placed by the
+ * host agent, enrols itself instead and serves none). The channel, the hive, the
  * agent's bearer token, the tenant, the pinned trust root and the console's account are the platform's (the chart and
  * the hive manifests inject them): an agent pointed elsewhere would hand its token and its cluster-wide patch on
  * Deployments to whoever answers, so they are left out of the descriptor and no tenant configuration can set them.

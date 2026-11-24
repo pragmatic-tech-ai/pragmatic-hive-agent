@@ -28,6 +28,8 @@ export interface IHiveKube
     GetSecretData(namespace: string, name: string): Promise<Readonly<Record<string, string>> | undefined>
     /** Creates the Secret; false when one of that name exists already (another start raced this one). */
     CreateSecret(namespace: string, name: string, data: Readonly<Record<string, string>>, labels: Readonly<Record<string, string>>): Promise<boolean>
+    /** Deletes the Secret; done when it is gone, also when it was never there. */
+    DeleteSecret(namespace: string, name: string): Promise<void>
     GetConfigMap(namespace: string, name: string): Promise<KubeConfigMap | undefined>
     /** Creates the ConfigMap (no version) or replaces the version given. */
     PutConfigMap(namespace: string, name: string, data: Readonly<Record<string, string>>, labels: Readonly<Record<string, string>>, resourceVersion: string | undefined): Promise<void>
@@ -63,6 +65,7 @@ export class InClusterHiveKube extends InClusterK8sApi implements IHiveKube
     private static readonly Get = 'GET'
     private static readonly Post = 'POST'
     private static readonly Put = 'PUT'
+    private static readonly Delete = 'DELETE'
     private static readonly Json = 'application/json'
     private static readonly Base64 = 'base64'
     private static readonly Utf8 = 'utf8'
@@ -109,6 +112,17 @@ export class InClusterHiveKube extends InClusterK8sApi implements IHiveKube
         }
         K.RequireOk(response.status)
         return true
+    }
+
+    public async DeleteSecret(namespace: string, name: string): Promise<void>
+    {
+        const K = InClusterHiveKube
+        const response = await this.Send(K.Delete, K.Named(K.SecretPath, namespace, name), undefined, K.Json)
+        if (response.status === K.StatusNotFound)
+        {
+            return
+        }
+        K.RequireOk(response.status)
     }
 
     public async GetConfigMap(namespace: string, name: string): Promise<KubeConfigMap | undefined>
