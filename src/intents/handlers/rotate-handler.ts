@@ -1,6 +1,12 @@
-import { IntentFailure, IntentProgress, IntentStatus, ProtocolVerificationError, RotationSubject, type IAgentChannel, type Intent, type Rotate, type VerifiedMessage } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { IntentFailure, IntentProgress, IntentStatus, RotationSubject, type IAgentChannel, type Intent, type Rotate, type VerifiedMessage } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import type { PlatformTrust } from '../../enrolment/platform-trust.js'
-import { HiveKeyRotationMismatchError, type HiveSigning } from '../../identity/hive-signing.js'
+import { HiveKeyRotationMismatchError, HiveSigning } from '../../identity/hive-signing.js'
+
+/** Where the pull cursor is read (the store): a key probe pulls at it, never rewinding. */
+export interface IPullCursor
+{
+    readonly Cursor: number
+}
 import type { EnvironmentIntentForwarder } from './environment-intent-forwarder.js'
 
 /**
@@ -15,7 +21,8 @@ export class RotateHandler
         private readonly trust: PlatformTrust,
         private readonly signing: HiveSigning,
         private readonly channel: IAgentChannel,
-        private readonly forwarder: EnvironmentIntentForwarder)
+        private readonly forwarder: EnvironmentIntentForwarder,
+        private readonly cursor: IPullCursor)
     {
     }
 
@@ -40,14 +47,14 @@ export class RotateHandler
             case RotationSubject.HiveKey:
                 try
                 {
-                    await this.signing.Rotate(this.channel, this.trust.Verifier())
+                    await this.signing.Rotate(this.channel, this.trust.Verifier(), this.cursor.Cursor)
                     return IntentStatus.Of(id, IntentProgress.Applied)
                 }
                 catch (error)
                 {
                     // An acknowledgement that does not verify or names another key is refused for good; a lost one (no
                     // answer, the platform unreachable) leaves the intent applying: the same rotation is sent again next tick.
-                    return error instanceof ProtocolVerificationError || error instanceof HiveKeyRotationMismatchError
+                    return HiveSigning.NotVerified(error) || error instanceof HiveKeyRotationMismatchError
                         ? IntentStatus.FailedWith(id, IntentFailure.RotationRefused)
                         : IntentStatus.Of(id, IntentProgress.Applying)
                 }

@@ -1,16 +1,17 @@
 import {
-    ComponentAtVersion, Intent, IntentApplyMode, IntentChoice, IntentDecisionRefusal, IntentFailure, IntentNotAcceptedError, IntentProgress, KeptIntentListing,
-    IntentStatus, MessageKind, ProtocolVerificationError, Pull, PullBatch, VerificationFailure,
+    ComponentAtVersion, Intent, IntentApplyMode, IntentChoice, IntentDecision, IntentDecisionKind, IntentDecisionRefusal, IntentFailure, IntentNotAcceptedError,
+    IntentProgress, IntentStatus, KeptIntentListing, MessageKind, ProtocolVerificationError, Pull, PullBatch, Rotate, RotationSubject, VerificationFailure,
     type IAgentChannel, type IntentDecisionCall, type KeptIntentView, type VerifiedMessage,
 } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import type { PlatformTrust } from '../enrolment/platform-trust.js'
-import type { HiveSigning } from '../identity/hive-signing.js'
+import { HiveSigning } from '../identity/hive-signing.js'
 import type { ITickTarget } from '../tick-loop.js'
 import { ApprovalSigner } from './approval-signer.js'
 import { EngineWorkloads } from './engine-workloads.js'
 import type { IntentAdmissionDecider } from './intent-admission-decider.js'
 import type { IApplyContext, IIntentExecutor } from './intent-executor-contract.js'
-import { KeptIntent, type IntentStore } from './intent-store.js'
+import type { IntentLease } from './intent-lease.js'
+import { IntentStoreFullError, KeptIntent, type IntentStore } from './intent-store.js'
 
 /** Why the agent did not take the console's decision: the code the console shows a fixed message for. */
 export class IntentDecisionRefusedError extends Error
@@ -48,32 +49,66 @@ export interface IntentPullerOptions
     Signing: HiveSigning
     Trust: PlatformTrust
     Log: IIntentLog
+    /** One pod applies at a time (absent in tests of one pod). */
+    Lease?: IntentLease
     /** Sends a report now: before the agent's own upgrade rolls, so the platform has seen `applying`. */
     ReportNow?: () => Promise<void>
     /** At most this many full batches per tick (then the next tick goes on). */
     MaxBatches?: number
 }
 
+/** The apply context over the kept intent as it is now (what NotePrevious recorded is what a revert reads). */
+class KeptApplyContext implements IApplyContext
+{
+    public constructor(private kept: KeptIntent, private readonly store: IntentStore)
+    {
+    }
+
+    public get Kept(): KeptIntent
+    {
+        return this.kept
+    }
+
+    public get PreviousImage(): string | null
+    {
+        return this.kept.PreviousImage
+    }
+
+    public async NotePrevious(image: string): Promise<void>
+    {
+        this.kept = this.kept.WithPrevious(image)
+        this.store.Put(this.kept)
+        await this.store.Save()
+    }
+}
+
 /**
- * The hive's side of pull-only management (C3.4): every tick it pulls the intents after its cursor (each batch and
- * each intent verified under the trust root, as addressed to this hive), keeps them (IntentStore), lets the stricter
- * level decide (IntentAdmissionDecider) whether one applies at once or waits for an admin's approval in the console,
- * marks waiting intents past their expiry expired, and applies what is due (the agent's own upgrade last, reported
- * before it rolls). The console's decision names the exact intent by digest; it is signed by the hive key and sent to
- * the platform, and an approval applies at once. Every kept intent is rechecked (signature, issuer, expiry) before it
- * is decided on and again before it is applied. Ticks and decisions run one at a time.
+ * The hive's side of pull-only management (C3.4): every tick (by the pod holding the lease) it merges what other writers
+ * kept, pulls the intents after its cursor (each batch and each intent verified under the trust root, as addressed to
+ * this hive), keeps them (IntentStore), lets the stricter level decide (IntentAdmissionDecider) whether one applies at
+ * once or waits for an admin's approval, marks waiting intents past their expiry expired, and applies what is due. An
+ * intent applies only when Delegated mode allows it or a stored approval verifies under the hive key for its exact digest
+ * (a status edited in the ConfigMap approves nothing). The agent's own upgrade waits for the rest of its batch and is
+ * reported before it rolls. Every kept intent is rechecked before it is decided on and again before it is applied; one
+ * that expired mid-roll is put back first. A pull the platform refuses under the current key while a rotated key is
+ * pending proves the pending key and pulls again; a failed pull never stops the expiry and apply steps. Decisions run on
+ * their own queue, beside a tick (a roll may take minutes); their writes merge with the tick's.
  */
 export class IntentPuller implements ITickTarget, IIntentDesk
 {
     public static readonly DefaultMaxBatches = 10
     private static readonly SkippedEvent = 'intent-skipped'
     private static readonly AdmittedEvent = 'intent-admitted'
-    private static readonly AppliedEvent = 'intent-settled'
+    private static readonly SettledEvent = 'intent-settled'
     private static readonly DecidedEvent = 'intent-decided'
+    private static readonly RefusedEvent = 'intent-store-full'
+    private static readonly NotApprovedEvent = 'intent-not-approved'
     private static readonly ApplyErrorEvent = 'intent-apply-error'
     private static readonly UnknownError = 'Error'
+    private static readonly Base64Url = 'base64url'
     private readonly approvals: ApprovalSigner
-    private serial: Promise<unknown> = Promise.resolve()
+    private ticks: Promise<unknown> = Promise.resolve()
+    private decisions: Promise<unknown> = Promise.resolve()
 
     public constructor(private readonly options: IntentPullerOptions)
     {
@@ -82,7 +117,9 @@ export class IntentPuller implements ITickTarget, IIntentDesk
 
     public Tick(): Promise<void>
     {
-        return this.Serial(() => this.Run())
+        const next = this.ticks.then(() => this.Run(), () => this.Run())
+        this.ticks = next.catch(() => undefined)
+        return next
     }
 
     public TickFailed(error: unknown, backoffMs: number): void
@@ -97,7 +134,9 @@ export class IntentPuller implements ITickTarget, IIntentDesk
 
     public async Decide(intentId: string, call: IntentDecisionCall): Promise<KeptIntentView>
     {
-        const view = await this.Serial(() => this.TakeDecision(intentId, call))
+        const next = this.decisions.then(() => this.TakeDecision(intentId, call), () => this.TakeDecision(intentId, call))
+        this.decisions = next.catch(() => undefined)
+        const view = await next
         if (call.Decision === IntentChoice.Approve)
         {
             // Pull and apply at once after an approval (not awaited: the console has its answer).
@@ -108,10 +147,53 @@ export class IntentPuller implements ITickTarget, IIntentDesk
 
     private async Run(): Promise<void>
     {
-        await this.Pull()
+        const o = this.options
+        if (o.Lease !== undefined && !await o.Lease.Acquire())
+        {
+            return
+        }
+        await o.Store.Refresh()
+        let failure: unknown
+        try
+        {
+            await this.PullProving()
+        }
+        catch (error)
+        {
+            failure = error
+        }
         this.ExpireWaiting()
-        await this.options.Store.Save()
+        await o.Store.Save()
         await this.ApplyDue()
+        if (failure !== undefined)
+        {
+            throw failure
+        }
+    }
+
+    /** Pulls; a pull refused under the current key while a rotated key is pending proves that key, then pulls again. */
+    private async PullProving(): Promise<void>
+    {
+        try
+        {
+            await this.Pull()
+        }
+        catch (error)
+        {
+            if (!HiveSigning.NotVerified(error) || !await this.options.Signing.ProvePending(this.options.Channel, this.options.Store.Cursor))
+            {
+                throw error
+            }
+            // The rotation that announced the pending key has taken effect: it is applied, never announced again.
+            for (const kept of this.options.Store.All())
+            {
+                if (kept.Progress === IntentProgress.Applying && IntentPuller.IsHiveKeyRotation(kept))
+                {
+                    this.options.Store.Put(kept.With(IntentProgress.Applied))
+                }
+            }
+            await this.Pull()
+        }
     }
 
     private async Pull(): Promise<void>
@@ -127,6 +209,7 @@ export class IntentPuller implements ITickTarget, IIntentDesk
             }
             const verifier = o.Trust.Verifier()
             const batch = (await verifier.Verify(reply, MessageKind.PullBatch, PullBatch)).Body
+            const admitted: string[] = []
             for (const item of batch.Items)
             {
                 let intent: VerifiedMessage<Intent>
@@ -140,10 +223,27 @@ export class IntentPuller implements ITickTarget, IIntentDesk
                     o.Log.Event(IntentPuller.SkippedEvent, error instanceof ProtocolVerificationError ? error.Failure : IntentPuller.UnknownError)
                     continue
                 }
-                this.Admit(intent)
+                if (this.Admit(intent, batch.Cursor))
+                {
+                    admitted.push(intent.Body.IntentId)
+                }
             }
             o.Store.SetCursor(batch.Cursor)
-            await o.Store.Save()
+            try
+            {
+                await o.Store.Save()
+            }
+            catch (error)
+            {
+                if (!(error instanceof IntentStoreFullError))
+                {
+                    throw error
+                }
+                // No room for this batch: it is refused (reported failed), the cursor moves on, the loop never wedges.
+                o.Store.Refuse(admitted)
+                o.Log.Event(IntentPuller.RefusedEvent, String(admitted.length))
+                await o.Store.Save()
+            }
             if (batch.Items.length < Pull.MaxItems)
             {
                 return
@@ -152,33 +252,37 @@ export class IntentPuller implements ITickTarget, IIntentDesk
     }
 
     /** Keeps a newly verified intent: applied at once or waiting, by the stricter level. The same intent again is ignored. */
-    private Admit(intent: VerifiedMessage<Intent>): void
+    private Admit(intent: VerifiedMessage<Intent>, batch: number): boolean
     {
         const store = this.options.Store
         const kept = store.Get(intent.Body.IntentId)
         if (kept !== undefined && kept.Digest === intent.Digest)
         {
-            return
+            return false
         }
         // A different digest under a kept id is a new intent: it replaces the kept one with its own status, so an approval
         // given to the old one (bound to its digest) can never apply it.
-        const fresh = new KeptIntent(intent.Envelope, intent.Body, IntentStatus.Of(intent.Body.IntentId, IntentProgress.AwaitingApproval))
-        let progress: IntentProgress
+        const fresh = new KeptIntent(intent.Envelope, intent.Body, IntentStatus.Of(intent.Body.IntentId, IntentProgress.AwaitingApproval), null, null, batch)
+        const mode = this.ModeOf(intent.Body)
+        store.Put(mode === undefined ? fresh.Failed(IntentFailure.PrecheckRefused) : fresh.With(mode === IntentApplyMode.ApplyDirectly ? IntentProgress.Applying : IntentProgress.AwaitingApproval))
+        this.options.Log.Event(IntentPuller.AdmittedEvent, store.Get(intent.Body.IntentId)?.Progress)
+        return true
+    }
+
+    private ModeOf(intent: Intent): IntentApplyMode | undefined
+    {
         try
         {
-            progress = this.options.Decider.ModeFor(intent.Body) === IntentApplyMode.ApplyDirectly ? IntentProgress.Applying : IntentProgress.AwaitingApproval
+            return this.options.Decider.ModeFor(intent)
         }
         catch (error)
         {
             if (error instanceof IntentNotAcceptedError)
             {
-                store.Put(fresh.Failed(IntentFailure.PrecheckRefused))
-                return
+                return undefined
             }
             throw error
         }
-        store.Put(fresh.With(progress))
-        this.options.Log.Event(IntentPuller.AdmittedEvent, progress)
     }
 
     private ExpireWaiting(): void
@@ -194,14 +298,23 @@ export class IntentPuller implements ITickTarget, IIntentDesk
         }
     }
 
-    /** Applies every intent that is due, in order, the agent's own upgrade last. */
+    /** Applies every intent that is due, in order; the agent's own upgrade last, and only once the rest of its batch is settled. */
     private async ApplyDue(): Promise<void>
     {
-        const due = this.options.Store.All().filter(kept => kept.Progress === IntentProgress.Applying)
-        const ordered = [...due.filter(kept => !IntentPuller.IsSelfUpgrade(kept)), ...due.filter(kept => IntentPuller.IsSelfUpgrade(kept))]
-        for (const kept of ordered)
+        const all = this.options.Store.All()
+        const due = all.filter(kept => kept.Progress === IntentProgress.Applying)
+        const others = due.filter(kept => !IntentPuller.IsSelfUpgrade(kept))
+        for (const kept of others)
         {
             await this.ApplyOne(kept)
+        }
+        for (const kept of due.filter(candidate => IntentPuller.IsSelfUpgrade(candidate)))
+        {
+            const waiting = this.options.Store.All().some(other => other.IntentId !== kept.IntentId && other.Batch === kept.Batch && !other.Settled && !IntentPuller.IsSelfUpgrade(other))
+            if (!waiting)
+            {
+                await this.ApplyOne(kept)
+            }
         }
     }
 
@@ -214,20 +327,19 @@ export class IntentPuller implements ITickTarget, IIntentDesk
             await o.Store.Save()
             return
         }
+        if (!this.Authorized(kept))
+        {
+            // Applying without Delegated mode or a valid approval (an edited ConfigMap): back to waiting for one.
+            o.Store.Put(kept.With(IntentProgress.AwaitingApproval))
+            o.Log.Event(IntentPuller.NotApprovedEvent)
+            await o.Store.Save()
+            return
+        }
         if (IntentPuller.IsSelfUpgrade(kept) && o.ReportNow !== undefined)
         {
             await o.ReportNow()
         }
-        let current = kept
-        const context: IApplyContext = {
-            PreviousImage: kept.PreviousImage,
-            NotePrevious: async image =>
-            {
-                current = current.WithPrevious(image)
-                o.Store.Put(current)
-                await o.Store.Save()
-            },
-        }
+        const context = new KeptApplyContext(kept, o.Store)
         let status: IntentStatus
         try
         {
@@ -238,29 +350,58 @@ export class IntentPuller implements ITickTarget, IIntentDesk
             o.Log.Event(IntentPuller.ApplyErrorEvent, error instanceof Error ? error.name : IntentPuller.UnknownError)
             status = IntentStatus.FailedWith(kept.IntentId, IntentFailure.ApplyFailed)
         }
-        o.Store.Put(current.WithStatus(status))
+        o.Store.Put(context.Kept.WithStatus(status))
         await o.Store.Save()
-        o.Log.Event(IntentPuller.AppliedEvent, status.Failure ?? status.Progress)
+        o.Log.Event(IntentPuller.SettledEvent, status.Failure ?? status.Progress)
     }
 
-    /** The kept intent verified again (not its nonce); an expired one is marked expired, any other failure failed. */
-    private async Recheck(kept: KeptIntent): Promise<VerifiedMessage<Intent> | undefined>
+    /** Delegated mode, or the hive's own approval of exactly this intent (its digest), signed by the hive key. */
+    private Authorized(kept: KeptIntent): boolean
     {
-        const store = this.options.Store
+        if (this.ModeOf(kept.Intent) === IntentApplyMode.ApplyDirectly)
+        {
+            return true
+        }
+        const decision = kept.Decision
+        const signing = this.options.Signing
+        if (decision === null || decision.Kind !== MessageKind.IntentDecision || !decision.Issuer.Equals(signing.Self) || decision.KeyId !== signing.Key.KeyId
+            || !signing.Key.PublicKey.Verify(decision.SigningInput(), Buffer.from(decision.Signature, IntentPuller.Base64Url)))
+        {
+            return false
+        }
         try
         {
-            const verified = await this.options.Trust.Verifier().Recheck(kept.Envelope, MessageKind.Intent, Intent)
+            const body = IntentDecision.Parse(decision.Body)
+            return body.Decision === IntentDecisionKind.Approved && body.Answers(kept.Envelope, kept.Intent)
+        }
+        catch
+        {
+            return false
+        }
+    }
+
+    /** The kept intent verified again (not its nonce); an expired one is put back (mid-roll) and marked expired, any other failure failed. */
+    private async Recheck(kept: KeptIntent): Promise<VerifiedMessage<Intent> | undefined>
+    {
+        const o = this.options
+        try
+        {
+            const verified = await o.Trust.Verifier().Recheck(kept.Envelope, MessageKind.Intent, Intent)
             if (verified.Body.IntentId !== kept.IntentId)
             {
-                store.Put(kept.Failed(IntentFailure.RecheckFailed))
+                o.Store.Put(kept.Failed(IntentFailure.RecheckFailed))
                 return undefined
             }
             return verified
         }
         catch (error)
         {
+            if (kept.PreviousImage !== null)
+            {
+                await o.Executor.Revert(kept.Intent, kept.PreviousImage)
+            }
             const expired = error instanceof ProtocolVerificationError && error.Failure === VerificationFailure.Expired
-            store.Put(expired ? kept.With(IntentProgress.Expired) : kept.Failed(IntentFailure.RecheckFailed))
+            o.Store.Put(expired ? kept.With(IntentProgress.Expired) : kept.Failed(IntentFailure.RecheckFailed))
             return undefined
         }
     }
@@ -269,6 +410,7 @@ export class IntentPuller implements ITickTarget, IIntentDesk
     {
         const o = this.options
         const R = IntentDecisionRefusal
+        await o.Store.Refresh()
         const kept = o.Store.Get(intentId)
         if (kept === undefined)
         {
@@ -286,32 +428,39 @@ export class IntentPuller implements ITickTarget, IIntentDesk
         {
             throw new IntentDecisionRefusedError(R.NotAwaiting)
         }
+        // Expired by its own date: refused even inside the verifier's clock-skew window.
+        if (kept.Envelope.ExpiresAt.getTime() <= o.Signing.Clock.Now().getTime())
+        {
+            o.Store.Put(kept.With(IntentProgress.Expired))
+            await o.Store.Save()
+            throw new IntentDecisionRefusedError(R.Expired)
+        }
         const verified = await this.Recheck(kept)
         if (verified === undefined)
         {
             await o.Store.Save()
             throw new IntentDecisionRefusedError(o.Store.Get(intentId)?.Progress === IntentProgress.Expired ? R.Expired : R.NotAwaiting)
         }
+        const decision = this.approvals.Sign(verified, call.Decision, call.Approver)
         try
         {
-            await o.Channel.Exchange(this.approvals.Sign(verified, call.Decision, call.Approver))
+            await o.Channel.Exchange(decision)
         }
         catch
         {
             throw new IntentDecisionRefusedError(R.Unavailable)
         }
-        const decided = kept.With(call.Decision === IntentChoice.Approve ? IntentProgress.Applying : IntentProgress.Rejected)
+        const decided = kept.WithDecision(decision).With(call.Decision === IntentChoice.Approve ? IntentProgress.Applying : IntentProgress.Rejected)
         o.Store.Put(decided)
         await o.Store.Save()
         o.Log.Event(IntentPuller.DecidedEvent, call.Decision)
         return decided.View()
     }
 
-    private Serial<T>(work: () => Promise<T>): Promise<T>
+    private static IsHiveKeyRotation(kept: KeptIntent): boolean
     {
-        const next = this.serial.then(work, work)
-        this.serial = next.catch(() => undefined)
-        return next
+        const action = kept.Intent.Action
+        return action instanceof Rotate && action.Subject === RotationSubject.HiveKey
     }
 
     private static IsSelfUpgrade(kept: KeptIntent): boolean

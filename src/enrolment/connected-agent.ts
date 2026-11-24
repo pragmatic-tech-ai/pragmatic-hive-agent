@@ -19,6 +19,7 @@ import { IntentLoop } from '../intents/intent-loop.js'
 import type { IntentPuller } from '../intents/intent-puller.js'
 import type { IntentStore } from '../intents/intent-store.js'
 import { PlatformTrust } from './platform-trust.js'
+import { IntentLease } from '../intents/intent-lease.js'
 
 /** The connected agent's log lines: events and codes only. */
 class ConnectedLog implements IInternalApiLog, IReportLog
@@ -99,6 +100,9 @@ export class ConnectedAgent
     private static readonly ConsoleComponent = 'pragmatic-tenant-admin'
     private static readonly IdpComponent = 'pragmatic-tenant-idp'
     private static readonly PostgresComponent = 'pragmatic-postgres'
+    /** The pod's name (Kubernetes sets the hostname to it): the intent lease's holder. */
+    private static readonly PodNameEnv = 'HOSTNAME'
+    private static readonly Sigterm = 'SIGTERM'
 
     private constructor()
     {
@@ -142,9 +146,18 @@ export class ConnectedAgent
         const channel = new HttpAgentChannel(record.ChannelUrl)
         const signing = new HiveSigning(key, record.HiveId, kube, settings.Namespace, clock)
         // Enrolled and Delegated hives are managed by pulled intents (C3.4); a Hosted one by push, so it runs no intent loop.
+        const lease = new IntentLease(kube, settings.Namespace, env[C.PodNameEnv]?.trim() || record.HiveId, clock)
         const loop: { Puller: IntentPuller, Store: IntentStore } | undefined = hosted === undefined
-            ? await IntentLoop.Compose({ Settings: settings, Kube: kube, Channel: channel, Signing: signing, Trust: new PlatformTrust(record, state, clock), Clock: clock, Logger: logger, ReportNow: (): Promise<void> => reporter.Tick() })
+            ? await IntentLoop.Compose({ Settings: settings, Kube: kube, Channel: channel, Signing: signing, Trust: new PlatformTrust(record, state, clock), Clock: clock, Logger: logger, ReportNow: (): Promise<void> => reporter.Tick(), Lease: lease })
             : undefined
+        if (loop !== undefined)
+        {
+            // A stopping pod (the end of its own upgrade's overlap) lets the next one apply at once.
+            process.once(C.Sigterm, () =>
+            {
+                void lease.Release().catch(() => undefined).finally(() => process.exit(0))
+            })
+        }
         const reporter: HiveReporter = new HiveReporter({
             Signing: signing, Intents: loop?.Store, Enrolment: record, Channel: channel, Kube: kube, Environments: new InClusterK8sApi(),
             InstallHive: installHive, EngineVersion: settings.EngineVersion, Log: log,
@@ -156,7 +169,7 @@ export class ConnectedAgent
         })
         try
         {
-            await new HiveKeyRecovery(signing, kube, settings.Namespace).Settle(channel, await reporter.Report())
+            await new HiveKeyRecovery(signing, kube, settings.Namespace).Settle(channel, await reporter.Report(), loop?.Store.Cursor ?? 0)
         }
         catch (error)
         {

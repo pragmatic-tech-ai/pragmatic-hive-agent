@@ -16,29 +16,48 @@ export class KubeContainer
     }
 }
 
+/** The replica counts of a workload's status and spec. */
+export class KubeReplicas
+{
+    public constructor(
+        /** spec.replicas: what the workload should run. */
+        public readonly Desired: number,
+        /** status.replicas: every pod it runs, old and new (a surge counts both). */
+        public readonly Current: number,
+        public readonly Updated: number,
+        public readonly Ready: number,
+        public readonly Available: number)
+    {
+    }
+}
+
 /** A Deployment's or StatefulSet's pod template containers and rollout status. */
 export class KubeWorkload
 {
     public constructor(
         public readonly Containers: readonly KubeContainer[],
+        public readonly InitContainers: readonly KubeContainer[],
         public readonly Generation: number,
         public readonly ObservedGeneration: number,
-        public readonly Replicas: number,
-        public readonly UpdatedReplicas: number,
-        public readonly ReadyReplicas: number)
+        public readonly Replicas: KubeReplicas)
     {
     }
 
-    /** Whether the controller has rolled the current template out: observed, every replica updated and ready. */
+    /**
+     * Whether the controller has rolled the current template out, by `kubectl rollout status`'s rule: observed, every
+     * desired replica updated, no old replica left (under maxSurge the old pod still counts, so a stuck surge never reads
+     * as rolled out) and every updated one available.
+     */
     public get RolledOut(): boolean
     {
-        return this.ObservedGeneration >= this.Generation && this.UpdatedReplicas >= this.Replicas && this.ReadyReplicas >= this.Replicas
+        const r = this.Replicas
+        return this.ObservedGeneration >= this.Generation && r.Updated === r.Desired && r.Current === r.Updated && r.Available >= r.Updated
     }
 
-    /** Whether every replica is ready (whatever template). */
+    /** Whether every desired replica is ready (whatever template). */
     public get Ready(): boolean
     {
-        return this.Replicas > 0 && this.ReadyReplicas >= this.Replicas
+        return this.Replicas.Desired > 0 && this.Replicas.Ready >= this.Replicas.Desired
     }
 
     /** The named container, or the first when no name is given. */
@@ -71,8 +90,13 @@ export interface IHiveKube
     /** Deletes the Secret; done when it is gone, also when it was never there. */
     DeleteSecret(namespace: string, name: string): Promise<void>
     GetConfigMap(namespace: string, name: string): Promise<KubeConfigMap | undefined>
-    /** Creates the ConfigMap (no version) or replaces the version given. */
-    PutConfigMap(namespace: string, name: string, data: Readonly<Record<string, string>>, labels: Readonly<Record<string, string>>, resourceVersion: string | undefined): Promise<void>
+    /** Creates the ConfigMap (no version) or replaces the version given; answers the new version. KubeConflictError when the
+     *  version is not the current one. */
+    PutConfigMap(namespace: string, name: string, data: Readonly<Record<string, string>>, labels: Readonly<Record<string, string>>, resourceVersion: string | undefined): Promise<string>
+    /** The Lease, or undefined (C3.4: one agent pod applies intents at a time). */
+    GetLease(namespace: string, name: string): Promise<KubeLease | undefined>
+    /** Creates (no version) or replaces the Lease; KubeConflictError when another holder wrote it first. */
+    PutLease(namespace: string, name: string, lease: KubeLease, labels: Readonly<Record<string, string>>): Promise<void>
     ReviewToken(token: string, audience: string): Promise<TokenReviewResult>
     /** Whether the Deployment (or StatefulSet) has every replica ready; undefined when it does not exist. */
     WorkloadReady(namespace: string, kind: KubeWorkloadKind, name: string): Promise<boolean | undefined>
@@ -84,18 +108,57 @@ export interface IHiveKube
     ReplaceSecret(namespace: string, name: string, data: Readonly<Record<string, string>>, labels: Readonly<Record<string, string>>): Promise<void>
 }
 
+/** A coordination.k8s.io Lease: who holds it, when they renewed it, for how long; its version. */
+export class KubeLease
+{
+    private static readonly NoHolder = ''
+    private static readonly MsPerSecond = 1000
+
+    public constructor(public readonly Holder: string, public readonly RenewedAt: Date, public readonly DurationSeconds: number, public readonly ResourceVersion: string | undefined)
+    {
+    }
+
+    /** Whether the holder's renewal has run out at `now`. */
+    public ExpiredAt(now: Date): boolean
+    {
+        return this.Holder === KubeLease.NoHolder || this.RenewedAt.getTime() + this.DurationSeconds * KubeLease.MsPerSecond <= now.getTime()
+    }
+}
+
+/** A write that named a resourceVersion that is no longer the current one (HTTP 409). */
+export class KubeConflictError extends Error
+{
+    private static readonly ErrorName = 'KubeConflictError'
+    private static readonly Text = 'kubernetes API request failed with status 409'
+
+    public constructor()
+    {
+        super(KubeConflictError.Text)
+        this.name = KubeConflictError.ErrorName
+    }
+}
+
 export enum KubeWorkloadKind
 {
     Deployment = 'deployments',
     StatefulSet = 'statefulsets',
 }
 
+interface IContainerBody
+{
+    name?: string
+    image?: string
+}
+
 interface IObjectBody
 {
     metadata?: { resourceVersion?: string; generation?: number }
     data?: Record<string, string>
-    spec?: { replicas?: number; template?: { spec?: { containers?: { name?: string; image?: string }[] } } }
-    status?: { replicas?: number; readyReplicas?: number; updatedReplicas?: number; observedGeneration?: number; authenticated?: boolean; audiences?: string[]; user?: { username?: string } }
+    spec?: {
+        replicas?: number; template?: { spec?: { containers?: IContainerBody[]; initContainers?: IContainerBody[] } }
+        holderIdentity?: string; renewTime?: string; leaseDurationSeconds?: number
+    }
+    status?: { replicas?: number; readyReplicas?: number; updatedReplicas?: number; availableReplicas?: number; observedGeneration?: number; authenticated?: boolean; audiences?: string[]; user?: { username?: string } }
 }
 
 /** IHiveKube over the in-cluster API (the agent's service account). */
@@ -115,6 +178,12 @@ export class InClusterHiveKube extends InClusterK8sApi implements IHiveKube
     private static readonly Delete = 'DELETE'
     private static readonly Patch = 'PATCH'
     private static readonly StrategicMerge = 'application/strategic-merge-patch+json'
+    private static readonly LeasePath = '/apis/coordination.k8s.io/v1/namespaces/{ns}/leases'
+    private static readonly LeaseApi = 'coordination.k8s.io/v1'
+    private static readonly LeaseKind = 'Lease'
+    /** A Lease's renewTime is a MicroTime: six fractional digits. */
+    private static readonly MillisPattern = /(\.\d{3})Z$/
+    private static readonly MicrosSuffix = '$1000Z'
     private static readonly NoText = ''
     private static readonly Json = 'application/json'
     private static readonly Base64 = 'base64'
@@ -181,7 +250,7 @@ export class InClusterHiveKube extends InClusterK8sApi implements IHiveKube
         return body === undefined ? undefined : new KubeConfigMap(body.data ?? {}, body.metadata?.resourceVersion ?? '')
     }
 
-    public async PutConfigMap(namespace: string, name: string, data: Readonly<Record<string, string>>, labels: Readonly<Record<string, string>>, resourceVersion: string | undefined): Promise<void>
+    public async PutConfigMap(namespace: string, name: string, data: Readonly<Record<string, string>>, labels: Readonly<Record<string, string>>, resourceVersion: string | undefined): Promise<string>
     {
         const K = InClusterHiveKube
         const metadata = resourceVersion === undefined ? { name, namespace, labels } : { name, namespace, labels, resourceVersion }
@@ -189,6 +258,33 @@ export class InClusterHiveKube extends InClusterK8sApi implements IHiveKube
         const response = resourceVersion === undefined
             ? await this.Send(K.Post, K.Collection(K.ConfigMapPath, namespace), body, K.Json)
             : await this.Send(K.Put, K.Named(K.ConfigMapPath, namespace, name), body, K.Json)
+        K.RequireOk(response.status)
+        return (JSON.parse(response.body) as IObjectBody).metadata?.resourceVersion ?? K.NoText
+    }
+
+    public async GetLease(namespace: string, name: string): Promise<KubeLease | undefined>
+    {
+        const K = InClusterHiveKube
+        const body = await this.GetObject(K.Named(K.LeasePath, namespace, name))
+        if (body === undefined)
+        {
+            return undefined
+        }
+        const renewed = new Date(body.spec?.renewTime ?? 0)
+        return new KubeLease(body.spec?.holderIdentity ?? K.NoText, Number.isNaN(renewed.getTime()) ? new Date(0) : renewed, body.spec?.leaseDurationSeconds ?? 0, body.metadata?.resourceVersion)
+    }
+
+    public async PutLease(namespace: string, name: string, lease: KubeLease, labels: Readonly<Record<string, string>>): Promise<void>
+    {
+        const K = InClusterHiveKube
+        const metadata = lease.ResourceVersion === undefined ? { name, namespace, labels } : { name, namespace, labels, resourceVersion: lease.ResourceVersion }
+        const body = JSON.stringify({
+            apiVersion: K.LeaseApi, kind: K.LeaseKind, metadata,
+            spec: { holderIdentity: lease.Holder, renewTime: lease.RenewedAt.toISOString().replace(K.MillisPattern, K.MicrosSuffix), leaseDurationSeconds: lease.DurationSeconds },
+        })
+        const response = lease.ResourceVersion === undefined
+            ? await this.Send(K.Post, K.Collection(K.LeasePath, namespace), body, K.Json)
+            : await this.Send(K.Put, K.Named(K.LeasePath, namespace, name), body, K.Json)
         K.RequireOk(response.status)
     }
 
@@ -226,9 +322,10 @@ export class InClusterHiveKube extends InClusterK8sApi implements IHiveKube
         {
             return undefined
         }
-        const containers = (body.spec?.template?.spec?.containers ?? []).map(container => new KubeContainer(container.name ?? K.NoText, container.image ?? K.NoText))
+        const read = (list: IContainerBody[] | undefined): KubeContainer[] => (list ?? []).map(container => new KubeContainer(container.name ?? K.NoText, container.image ?? K.NoText))
         const status = body.status ?? {}
-        return new KubeWorkload(containers, body.metadata?.generation ?? 0, status.observedGeneration ?? 0, body.spec?.replicas ?? 1, status.updatedReplicas ?? 0, status.readyReplicas ?? 0)
+        const replicas = new KubeReplicas(body.spec?.replicas ?? 1, status.replicas ?? 0, status.updatedReplicas ?? 0, status.readyReplicas ?? 0, status.availableReplicas ?? 0)
+        return new KubeWorkload(read(body.spec?.template?.spec?.containers), read(body.spec?.template?.spec?.initContainers), body.metadata?.generation ?? 0, status.observedGeneration ?? 0, replicas)
     }
 
     public async PatchWorkload(namespace: string, kind: KubeWorkloadKind, name: string, patch: object): Promise<void>
@@ -283,6 +380,10 @@ export class InClusterHiveKube extends InClusterK8sApi implements IHiveKube
 
     private static RequireOk(status: number): void
     {
+        if (status === InClusterHiveKube.Conflict)
+        {
+            throw new KubeConflictError()
+        }
         if (status < InClusterHiveKube.StatusOkMin || status > InClusterHiveKube.StatusOkMax)
         {
             throw new Error(InClusterHiveKube.KubeFailurePrefix + status)

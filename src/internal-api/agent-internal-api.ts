@@ -48,7 +48,6 @@ export class AgentInternalApi
     private static readonly EndEvent = 'end'
     private static readonly AnyAddress = '0.0.0.0'
 
-    private static readonly DecidedEvent = 'intent-decided'
     private static readonly DecisionRefusedEvent = 'intent-decision-refused'
     private server: Server | undefined
     private intents: IIntentDesk | undefined
@@ -235,7 +234,6 @@ export class AgentInternalApi
         try
         {
             const view = await desk.Decide(decisionId, call)
-            this.log.Event(A.DecidedEvent, call.Decision)
             A.Write(res, A.StatusOk, view.ToJson())
         }
         catch (error)

@@ -82,7 +82,7 @@ export class HiveSigning
      * current key (it switched, and an earlier acknowledgement was lost), the pending key is tried with a harmless pull
      * and, accepted, adopted. A lost answer otherwise throws: the caller sends the same rotation again later.
      */
-    public async Rotate(channel: IAgentChannel, verifier: EnvelopeVerifier): Promise<HiveKeyRotationAck>
+    public async Rotate(channel: IAgentChannel, verifier: EnvelopeVerifier, cursor: number): Promise<HiveKeyRotationAck>
     {
         const next = (await HiveIdentity.Pending(this.kube, this.namespace)) ?? SigningKeyPair.Generate()
         await HiveIdentity.WritePending(this.kube, this.namespace, this.key, next)
@@ -97,9 +97,11 @@ export class HiveSigning
             {
                 throw error
             }
-            // The platform already holds the new key: prove it with the pending key, then adopt it.
-            await channel.Exchange(this.SignWith(next, MessageKind.Pull, Pull.Create(0, 1)))
-            await this.Adopt(next)
+            // The platform may already hold the new key: prove it with the pending key, then adopt it.
+            if (!await this.ProvePending(channel, cursor))
+            {
+                throw new HiveKeyRotationMismatchError()
+            }
             return HiveKeyRotationAck.Create(this.HiveId, next.KeyId)
         }
         if (reply === null)
@@ -113,6 +115,34 @@ export class HiveSigning
         }
         await this.Adopt(next)
         return ack
+    }
+
+    /**
+     * After the platform stopped verifying the current key: when a pending key is kept, a pull at the store's cursor
+     * (`cursor`, so nothing is rewound) is sent under it; accepted, the pending key becomes the hive key. False when there
+     * is no pending key or the platform does not verify it either (both refusals read the same, over HTTP or in process).
+     */
+    public async ProvePending(channel: IAgentChannel, cursor: number): Promise<boolean>
+    {
+        const pending = await HiveIdentity.Pending(this.kube, this.namespace)
+        if (pending === undefined)
+        {
+            return false
+        }
+        try
+        {
+            await channel.Exchange(this.SignWith(pending, MessageKind.Pull, Pull.Create(cursor, 1)))
+        }
+        catch (error)
+        {
+            if (HiveSigning.NotVerified(error))
+            {
+                return false
+            }
+            throw error
+        }
+        await this.Adopt(pending)
+        return true
     }
 
     /** The platform did not verify the message (over HTTP its refusal code; in process, the verifier's error). */

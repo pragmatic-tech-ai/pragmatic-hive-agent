@@ -40,4 +40,13 @@ export class IntentExecutor implements IIntentExecutor
                 return this.forwarder.Forward(id, action)
         }
     }
+
+    public async Revert(intent: Intent, previousImage: string): Promise<void>
+    {
+        const action = intent.Action
+        if (action.Kind === IntentActionKind.ComponentAtVersion)
+        {
+            await this.components.Revert(action, previousImage)
+        }
+    }
 }

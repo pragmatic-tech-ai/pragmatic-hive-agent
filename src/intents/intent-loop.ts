@@ -13,6 +13,7 @@ import { IntentAdmissionDecider } from './intent-admission-decider.js'
 import { IntentExecutor } from './intent-executor.js'
 import { IntentPuller, type IIntentLog } from './intent-puller.js'
 import { IntentStore } from './intent-store.js'
+import type { IntentLease } from './intent-lease.js'
 import { RolloutWatch } from './rollout-watch.js'
 
 /** The intent loop's log lines: events and codes only. */
@@ -54,6 +55,7 @@ export interface IntentLoopParts
     Clock: IProtocolClock
     Logger: ILogger
     ReportNow: () => Promise<void>
+    Lease: IntentLease
 }
 
 /**
@@ -83,12 +85,12 @@ export class IntentLoop
         const forwarder = new EnvironmentIntentForwarder(s.ConsoleIntentUrl, s.ConsoleTokenFile)
         const executor = new IntentExecutor(
             new ComponentAtVersionHandler(parts.Kube, workloads, watch),
-            new RotateHandler(parts.Trust, parts.Signing, parts.Channel, forwarder),
+            new RotateHandler(parts.Trust, parts.Signing, parts.Channel, forwarder, store),
             new RepairHandler(parts.Kube, workloads, watch, forwarder, parts.Clock),
             forwarder)
         const puller = new IntentPuller({
             Channel: parts.Channel, Store: store, Decider: new IntentAdmissionDecider(parts.Trust), Executor: executor,
-            Signing: parts.Signing, Trust: parts.Trust, Log: new IntentLog(parts.Logger), ReportNow: parts.ReportNow,
+            Signing: parts.Signing, Trust: parts.Trust, Log: new IntentLog(parts.Logger), ReportNow: parts.ReportNow, Lease: parts.Lease,
         })
         return { Puller: puller, Store: store }
     }

@@ -28,6 +28,8 @@ export interface IEnvironmentLister
 export interface IIntentStatusSource
 {
     Statuses(max: number): IntentStatus[]
+    /** The platform took a report carrying these. */
+    MarkReported(statuses: readonly IntentStatus[]): Promise<void>
 }
 
 /** What a failed report tick logs (its error's name only). */
@@ -70,7 +72,9 @@ export class HiveReporter implements ITickTarget
 
     public async Tick(): Promise<void>
     {
-        await this.options.Channel.Exchange(this.options.Signing.Sign(MessageKind.HiveReport, await this.Report()))
+        const report = await this.Report()
+        await this.options.Channel.Exchange(this.options.Signing.Sign(MessageKind.HiveReport, report))
+        await this.options.Intents?.MarkReported(report.Intents)
     }
 
     public TickFailed(error: unknown, backoffMs: number): void

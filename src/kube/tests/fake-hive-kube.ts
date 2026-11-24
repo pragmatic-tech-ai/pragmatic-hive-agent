@@ -1,4 +1,4 @@
-import { KubeConfigMap, KubeContainer, KubeWorkload, TokenReviewResult, type IHiveKube, type KubeWorkloadKind } from '../hive-kube.js'
+import { KubeConfigMap, KubeConflictError, KubeContainer, KubeLease, KubeReplicas, KubeWorkload, TokenReviewResult, type IHiveKube, type KubeWorkloadKind } from '../hive-kube.js'
 
 /** A token the fake TokenReview knows: who it authenticates as, for which audiences. */
 export class FakeToken
@@ -8,28 +8,40 @@ export class FakeToken
     }
 }
 
-/** A workload in the fake: its template containers, generation and whether a changed template ever becomes ready. */
+/**
+ * A workload in the fake, rolling as a Deployment with maxSurge 1 and maxUnavailable 0 does: a changed template that
+ * never readies leaves one new, unready pod beside the old ready ones (status.replicas = desired + 1, one updated), so
+ * the old pods keep serving and the roll never completes; a template put back to the original one is the old pods again.
+ */
 export class FakeWorkload
 {
     public Generation = 1
     public ObservedGeneration = 1
-    /** Every replica of the running template is ready. */
+    /** Every replica of the running template is ready (false: the pods are broken, whatever the template). */
     public Ready = true
-    /** A changed template never readies (the new pod fails); the previous pods stay ready. */
+    /** A template other than the original one never readies (the new pod fails). */
     public NeverReadies = false
     public readonly Patches: object[] = []
     public RestartedAt: string | undefined
+    private readonly original: string
 
-    public constructor(public readonly Containers: KubeContainer[], public readonly Replicas: number = 1)
+    public constructor(public readonly Containers: KubeContainer[], public readonly InitContainers: KubeContainer[] = [], public readonly Replicas: number = 1)
     {
+        this.original = this.Template()
     }
 
     public Snapshot(): KubeWorkload
     {
-        const changed = this.Generation > 1
-        const updated = this.NeverReadies && changed ? 0 : this.Replicas
-        const ready = this.Ready ? (this.NeverReadies && changed ? 0 : this.Replicas) : 0
-        return new KubeWorkload([...this.Containers], this.Generation, this.ObservedGeneration, this.Replicas, updated, ready)
+        const d = this.Replicas
+        const stuck = this.NeverReadies && this.Template() !== this.original
+        const ready = this.Ready ? d : 0
+        const replicas = stuck ? new KubeReplicas(d, d + 1, 1, ready, ready) : new KubeReplicas(d, d, d, ready, ready)
+        return new KubeWorkload([...this.Containers], [...this.InitContainers], this.Generation, this.ObservedGeneration, replicas)
+    }
+
+    private Template(): string
+    {
+        return JSON.stringify([this.Containers, this.InitContainers])
     }
 }
 
@@ -79,16 +91,36 @@ export class FakeHiveKube implements IHiveKube
         return this.ConfigMaps.get(FakeHiveKube.Key(namespace, name))
     }
 
-    public async PutConfigMap(namespace: string, name: string, data: Readonly<Record<string, string>>, _labels: Readonly<Record<string, string>>, resourceVersion: string | undefined): Promise<void>
+    public async PutConfigMap(namespace: string, name: string, data: Readonly<Record<string, string>>, _labels: Readonly<Record<string, string>>, resourceVersion: string | undefined): Promise<string>
     {
         const key = FakeHiveKube.Key(namespace, name)
         const current = this.ConfigMaps.get(key)
         if ((current === undefined) !== (resourceVersion === undefined) || (current !== undefined && current.ResourceVersion !== resourceVersion))
         {
-            throw new Error('kubernetes API request failed with status 409')
+            throw new KubeConflictError()
         }
         this.version += 1
         this.ConfigMaps.set(key, new KubeConfigMap({ ...data }, String(this.version)))
+        return String(this.version)
+    }
+
+    public readonly Leases = new Map<string, KubeLease>()
+
+    public async GetLease(namespace: string, name: string): Promise<KubeLease | undefined>
+    {
+        return this.Leases.get(FakeHiveKube.Key(namespace, name))
+    }
+
+    public async PutLease(namespace: string, name: string, lease: KubeLease): Promise<void>
+    {
+        const key = FakeHiveKube.Key(namespace, name)
+        const current = this.Leases.get(key)
+        if ((current === undefined) !== (lease.ResourceVersion === undefined) || (current !== undefined && current.ResourceVersion !== lease.ResourceVersion))
+        {
+            throw new KubeConflictError()
+        }
+        this.version += 1
+        this.Leases.set(key, new KubeLease(lease.Holder, lease.RenewedAt, lease.DurationSeconds, String(this.version)))
     }
 
     public async ReviewToken(token: string, audience: string): Promise<TokenReviewResult>
@@ -112,9 +144,9 @@ export class FakeHiveKube implements IHiveKube
         return this.Workloads.get(FakeHiveKube.Key(namespace, kind + '/' + name))
     }
 
-    public AddWorkload(namespace: string, kind: KubeWorkloadKind, name: string, image: string, container: string = 'main'): FakeWorkload
+    public AddWorkload(namespace: string, kind: KubeWorkloadKind, name: string, image: string, container: string = 'main', initContainers: KubeContainer[] = []): FakeWorkload
     {
-        const workload = new FakeWorkload([new KubeContainer(container, image)])
+        const workload = new FakeWorkload([new KubeContainer(container, image)], initContainers)
         this.Objects.set(FakeHiveKube.Key(namespace, kind + '/' + name), workload)
         return workload
     }
@@ -138,13 +170,16 @@ export class FakeHiveKube implements IHiveKube
         }
         this.PatchLog.push(kind + '/' + name)
         workload.Patches.push(patch)
-        const template = (patch as { spec?: { template?: { metadata?: { annotations?: Record<string, string> }, spec?: { containers?: { name: string, image: string }[] } } } }).spec?.template
-        for (const change of template?.spec?.containers ?? [])
+        const template = (patch as { spec?: { template?: { metadata?: { annotations?: Record<string, string> }, spec?: { containers?: { name: string, image: string }[], initContainers?: { name: string, image: string }[] } } } }).spec?.template
+        for (const [list, changes] of [[workload.Containers, template?.spec?.containers ?? []], [workload.InitContainers, template?.spec?.initContainers ?? []]] as const)
         {
-            const index = workload.Containers.findIndex(container => container.Name === change.name)
-            if (index >= 0)
+            for (const change of changes)
             {
-                workload.Containers[index] = new KubeContainer(change.name, change.image)
+                const index = list.findIndex(container => container.Name === change.name)
+                if (index >= 0)
+                {
+                    list[index] = new KubeContainer(change.name, change.image)
+                }
             }
         }
         const restarted = template?.metadata?.annotations?.['kubectl.kubernetes.io/restartedAt']

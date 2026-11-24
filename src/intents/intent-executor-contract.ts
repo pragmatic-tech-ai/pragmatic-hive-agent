@@ -14,4 +14,6 @@ export interface IApplyContext
 export interface IIntentExecutor
 {
     Apply(intent: VerifiedMessage<Intent>, context: IApplyContext): Promise<IntentStatus>
+    /** Puts back what an apply changed before it stopped (an intent that expired or failed its recheck mid-roll). */
+    Revert(intent: Intent, previousImage: string): Promise<void>
 }

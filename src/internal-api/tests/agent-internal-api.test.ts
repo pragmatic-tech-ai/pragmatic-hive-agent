@@ -183,7 +183,7 @@ describe('AgentInternalApi', () =>
         const trust = new PlatformTrust(record, new EnrolmentState(w.Kube, ApiWorld.Namespace, w.Platform.TrustRoot), w.Clock)
         const store = new IntentStore(w.Kube, ApiWorld.Namespace)
         const puller = new IntentPuller({
-            Channel: new FakeAgentChannel(w.Platform), Store: store, Decider: new IntentAdmissionDecider(trust), Executor: { Apply: async intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applied) },
+            Channel: new FakeAgentChannel(w.Platform), Store: store, Decider: new IntentAdmissionDecider(trust), Executor: { Apply: async intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applied), Revert: async () => undefined },
             Signing: signing, Trust: trust, Log: { Event: () => undefined, Failed: () => undefined },
         })
         w.Api.AttachIntents(puller)

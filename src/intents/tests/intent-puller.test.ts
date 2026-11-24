@@ -56,7 +56,7 @@ describe('IntentPuller', () =>
         const world = await IntentWorld.Enrolled(HiveLevel.Delegated)
         world.Publish(IntentWorld.CreateEnvironment(), HiveLevel.Delegated)
         await world.Puller.Tick()
-        assert.deepEqual(world.Executor.Applied, ['intent-2'])
+        assert.deepEqual(world.Recorded.Applied, ['intent-2'])
         assert.equal(world.Progress('intent-2'), IntentProgress.Applied)
         assert.equal(world.Platform.ReceivedOf(MessageKind.IntentDecision).length, 0)
     })
@@ -66,13 +66,13 @@ describe('IntentPuller', () =>
         const enrolled = await IntentWorld.Enrolled(HiveLevel.Enrolled)
         enrolled.Publish(IntentWorld.CreateEnvironment(), HiveLevel.Delegated)
         await enrolled.Puller.Tick()
-        assert.deepEqual(enrolled.Executor.Applied, [])
+        assert.deepEqual(enrolled.Recorded.Applied, [])
         assert.equal(enrolled.Progress('intent-2'), IntentProgress.AwaitingApproval)
 
         const delegated = await IntentWorld.Enrolled(HiveLevel.Delegated)
         delegated.Publish(IntentWorld.CreateEnvironment(), HiveLevel.Enrolled)
         await delegated.Puller.Tick()
-        assert.deepEqual(delegated.Executor.Applied, [])
+        assert.deepEqual(delegated.Recorded.Applied, [])
         assert.equal(delegated.Progress('intent-2'), IntentProgress.AwaitingApproval)
         assert.equal(delegated.Puller.Listing().Intents[0]?.Decidable(delegated.Clock.Now()), true)
     })
@@ -89,7 +89,7 @@ describe('IntentPuller', () =>
         assert.equal(decision?.Decision, IntentDecisionKind.Approved)
         assert.equal(decision?.IntentDigest, digest)
         assert.deepEqual(decision?.Approver.ToJson(), { Realm: 'acme', Subject: 'u-7' })
-        assert.deepEqual(world.Executor.Applied, ['intent-2'])
+        assert.deepEqual(world.Recorded.Applied, ['intent-2'])
         assert.equal(world.Progress('intent-2'), IntentProgress.Applied)
     })
 
@@ -103,11 +103,11 @@ describe('IntentPuller', () =>
         assert.notEqual(first, second)
         assert.equal(world.Store.Get('intent-x')?.Digest, second)
         assert.equal(await Decisions.CodeOf(world.Puller.Decide('intent-x', Decisions.Approve(first))), IntentDecisionRefusal.DigestMismatch)
-        assert.deepEqual(world.Executor.Applied, [])
+        assert.deepEqual(world.Recorded.Applied, [])
         assert.equal(world.Platform.ReceivedOf(MessageKind.IntentDecision).length, 0)
         await world.Puller.Decide('intent-x', Decisions.Approve(second))
         await Decisions.Settle(world)
-        assert.deepEqual(world.Executor.Applied, ['intent-x'])
+        assert.deepEqual(world.Recorded.Applied, ['intent-x'])
     })
 
     it('an expired intent cannot be approved; it shows expired', async () =>
@@ -120,7 +120,7 @@ describe('IntentPuller', () =>
         assert.equal(world.Progress('intent-2'), IntentProgress.Expired)
         assert.equal(await Decisions.CodeOf(world.Puller.Decide('intent-2', Decisions.Approve(digest))), IntentDecisionRefusal.Expired)
         assert.equal(world.Puller.Listing().Intents[0]?.Progress, IntentProgress.Expired)
-        assert.deepEqual(world.Executor.Applied, [])
+        assert.deepEqual(world.Recorded.Applied, [])
     })
 
     it('a waiting intent past its expiry is marked expired by the next tick', async () =>
@@ -144,7 +144,7 @@ describe('IntentPuller', () =>
         assert.deepEqual(Object.keys(decision!.ToJson()).sort(), ['Approver', 'DecidedAt', 'Decision', 'IntentDigest', 'IntentId'])
         assert.equal(decision?.Decision, IntentDecisionKind.Rejected)
         await world.Puller.Tick()
-        assert.deepEqual(world.Executor.Applied, [])
+        assert.deepEqual(world.Recorded.Applied, [])
         assert.equal(await Decisions.CodeOf(world.Puller.Decide('intent-2', Decisions.Approve(digest))), IntentDecisionRefusal.NotAwaiting)
         assert.equal(await Decisions.CodeOf(world.Puller.Decide('intent-9', Decisions.Approve(digest))), IntentDecisionRefusal.UnknownIntent)
     })
@@ -180,14 +180,14 @@ describe('IntentPuller', () =>
         assert.notEqual(tampered.Digest, digest)
         assert.equal(await Decisions.CodeOf(world.Puller.Decide('intent-2', Decisions.Approve(tampered.Digest))), IntentDecisionRefusal.NotAwaiting)
         assert.equal(world.Store.Get('intent-2')?.Status.Failure, IntentFailure.RecheckFailed)
-        assert.deepEqual(world.Executor.Applied, [])
+        assert.deepEqual(world.Recorded.Applied, [])
         assert.equal(world.Platform.ReceivedOf(MessageKind.IntentDecision).length, 0)
     })
 
     it('a tampered kept intent waiting to be applied fails its recheck at apply', async () =>
     {
         const world = await IntentWorld.Enrolled(HiveLevel.Delegated)
-        world.Executor.Answer = intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applying)
+        world.Recorded.Answer = intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applying)
         world.Publish(IntentWorld.CreateEnvironment('staging'))
         await world.Puller.Tick()
         const key = FakeHiveKube.Key(IntentWorld.Namespace, IntentStore.ConfigMapName)
@@ -197,7 +197,7 @@ describe('IntentPuller', () =>
         world.Kube.ConfigMaps.set(key, new KubeConfigMap({ ...map.Data, 'intents.json': JSON.stringify(kept) }, map.ResourceVersion))
         await world.Restart()
         await world.Puller.Tick()
-        assert.deepEqual(world.Executor.Applied, ['intent-2'], 'applied once before the tampering, never after')
+        assert.deepEqual(world.Recorded.Applied, ['intent-2'], 'applied once before the tampering, never after')
         assert.equal(world.Store.Get('intent-2')?.Status.Failure, IntentFailure.RecheckFailed)
     })
 
@@ -213,7 +213,7 @@ describe('IntentPuller', () =>
             : null
         await world.Puller.Tick()
         assert.deepEqual(world.Store.All(), [])
-        assert.deepEqual(world.Executor.Applied, [])
+        assert.deepEqual(world.Recorded.Applied, [])
         assert.equal(world.Store.Cursor, 2)
     })
 
@@ -224,27 +224,27 @@ describe('IntentPuller', () =>
         world.Publish(IntentWorld.Component('pragmatic-tenant-admin'))
         world.Publish(IntentWorld.CreateEnvironment())
         await world.Puller.Tick()
-        assert.deepEqual(world.Executor.Applied, ['intent-3', 'intent-4', 'intent-2'])
+        assert.deepEqual(world.Recorded.Applied, ['intent-3', 'intent-4', 'intent-2'])
         assert.deepEqual(world.Reports, ['report after intent-3,intent-4'])
     })
 
     it('an intent that cannot finish now stays applying and is tried again', async () =>
     {
         const world = await IntentWorld.Enrolled(HiveLevel.Delegated)
-        world.Executor.Answer = intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applying)
+        world.Recorded.Answer = intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applying)
         world.Publish()
         await world.Puller.Tick()
         assert.equal(world.Progress('intent-2'), IntentProgress.Applying)
-        world.Executor.Answer = intent => IntentStatus.FailedWith(intent.Body.IntentId, IntentFailure.EnvironmentExists)
+        world.Recorded.Answer = intent => IntentStatus.FailedWith(intent.Body.IntentId, IntentFailure.EnvironmentExists)
         await world.Puller.Tick()
-        assert.deepEqual(world.Executor.Applied, ['intent-2', 'intent-2'])
+        assert.deepEqual(world.Recorded.Applied, ['intent-2', 'intent-2'])
         assert.equal(world.Store.Get('intent-2')?.Status.Failure, IntentFailure.EnvironmentExists)
     })
 
     it('reports carry the kept intents\' statuses with their failure codes', async () =>
     {
         const world = await IntentWorld.Enrolled(HiveLevel.Delegated)
-        world.Executor.Answer = intent => IntentStatus.FailedWith(intent.Body.IntentId, IntentFailure.NotReady)
+        world.Recorded.Answer = intent => IntentStatus.FailedWith(intent.Body.IntentId, IntentFailure.NotReady)
         world.Publish()
         await world.Puller.Tick()
         const report = HiveReport.Create({ EngineVersion: '0.1.0', Components: [], Environments: [], Intents: world.Store.Statuses(HiveReport.MaxIntents) })
@@ -261,7 +261,7 @@ describe('IntentPuller', () =>
         await world.Puller.Tick()
         const small = new IntentStore(world.Kube, IntentWorld.Namespace, 2 * Buffer.byteLength(world.Store.All()[0]!.Envelope.Encode()) + 400)
         await small.Load()
-        await small.Save()
+        await small.MarkReported(small.Statuses(10))
         assert.ok(small.All().length < 6)
         assert.equal(small.All().at(-1)?.IntentId, 'intent-7')
     })

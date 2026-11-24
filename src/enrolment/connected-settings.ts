@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { ConsoleAddress, ConsoleAddressOption, ProtocolNames, SigningPublicKey } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import { AgentSettings } from '../agent-settings.js'
+import { EnvironmentIntentForwarder } from '../intents/handlers/environment-intent-forwarder.js'
 
 /** A connected agent's setting is missing or not what it must be (names the setting, never a value). */
 export class ConnectedSettingError extends Error
@@ -44,7 +45,7 @@ export class ConnectedSettings
     public static readonly ConsoleTokenFileEnv = 'PRAGMATIC_AGENT_CONSOLE_TOKEN_FILE'
     public static readonly AgentDeploymentEnv = 'PRAGMATIC_AGENT_DEPLOYMENT'
     public static readonly RolloutTimeoutEnv = 'PRAGMATIC_AGENT_ROLLOUT_TIMEOUT_MS'
-    public static readonly DefaultConsoleTokenFile = '/var/run/secrets/pragmatic-tenant-admin/token'
+    public static readonly DefaultConsoleTokenFile = EnvironmentIntentForwarder.DefaultTokenFile
     public static readonly DefaultRolloutTimeoutMs = 600_000
     private static readonly ConsoleUrl = /^http:\/\/[a-z0-9.-]{1,253}:[0-9]{1,5}$/
     private static readonly HostedValue = 'true'

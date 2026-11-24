@@ -12,17 +12,32 @@ import { IntentAdmissionDecider } from '../intent-admission-decider.js'
 import type { IApplyContext, IIntentExecutor } from '../intent-executor-contract.js'
 import { IntentPuller } from '../intent-puller.js'
 import { IntentStore } from '../intent-store.js'
+import { IntentLease } from '../intent-lease.js'
 
 /** An executor that records what it was asked to apply and answers a fixed status (applied by default). */
 export class RecordingExecutor implements IIntentExecutor
 {
     public readonly Applied: string[] = []
-    public Answer: (intent: VerifiedMessage<Intent>) => IntentStatus = intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applied)
+    public readonly Reverted: string[] = []
+    public Answer: (intent: VerifiedMessage<Intent>, context: IApplyContext) => Promise<IntentStatus> | IntentStatus = intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applied)
 
-    public async Apply(intent: VerifiedMessage<Intent>, _context: IApplyContext): Promise<IntentStatus>
+    public async Apply(intent: VerifiedMessage<Intent>, context: IApplyContext): Promise<IntentStatus>
     {
         this.Applied.push(intent.Body.IntentId)
-        return this.Answer(intent)
+        return this.Answer(intent, context)
+    }
+
+    public async Revert(intent: Intent, previousImage: string): Promise<void>
+    {
+        this.Reverted.push(intent.IntentId + '@' + previousImage)
+    }
+}
+
+/** One agent process: its signing identity, trust, kept intents and loop. */
+export class AgentPod
+{
+    public constructor(public readonly Signing: HiveSigning, public readonly Trust: PlatformTrust, public readonly Store: IntentStore, public readonly Puller: IntentPuller)
+    {
     }
 }
 
@@ -40,7 +55,7 @@ export class IntentWorld
     public readonly Kube = new FakeHiveKube()
     public readonly State = new EnrolmentState(this.Kube, IntentWorld.Namespace, this.Platform.TrustRoot)
     public readonly Key = SigningKeyPair.Generate()
-    public readonly Executor = new RecordingExecutor()
+    public Executor: IIntentExecutor = new RecordingExecutor()
     public readonly Events: string[] = []
     public readonly Reports: string[] = []
     public Record!: EnrolmentRecord
@@ -64,21 +79,39 @@ export class IntentWorld
     }
 
     /** A new agent process over the same cluster: everything read back from the ConfigMaps and Secret. */
-    public async Restart(): Promise<void>
+    public async Restart(holder?: string): Promise<void>
+    {
+        const pod = await this.Pod(holder)
+        this.Signing = pod.Signing
+        this.Trust = pod.Trust
+        this.Store = pod.Store
+        this.Puller = pod.Puller
+    }
+
+    /** One agent pod over this cluster and platform (its own memory; the ConfigMaps, Secret and lease shared). */
+    public async Pod(holder?: string, executor: IIntentExecutor = this.Executor): Promise<AgentPod>
     {
         this.Record = (await this.State.Read()) as EnrolmentRecord
-        this.Signing = new HiveSigning(this.Signing?.Key ?? this.Key, this.Record.HiveId, this.Kube, IntentWorld.Namespace, this.Clock)
-        this.Trust = new PlatformTrust(this.Record, this.State, this.Clock)
-        this.Store = new IntentStore(this.Kube, IntentWorld.Namespace)
-        await this.Store.Load()
-        this.Puller = new IntentPuller({
-            Channel: this.Channel, Store: this.Store, Decider: new IntentAdmissionDecider(this.Trust), Executor: this.Executor, Signing: this.Signing, Trust: this.Trust,
+        const signing = new HiveSigning(this.Signing?.Key ?? this.Key, this.Record.HiveId, this.Kube, IntentWorld.Namespace, this.Clock)
+        const trust = new PlatformTrust(this.Record, this.State, this.Clock)
+        const store = new IntentStore(this.Kube, IntentWorld.Namespace)
+        await store.Load()
+        const puller = new IntentPuller({
+            Channel: this.Channel, Store: store, Decider: new IntentAdmissionDecider(trust), Executor: executor, Signing: signing, Trust: trust,
             Log: { Event: (event, code) => this.Events.push(event + ' ' + (code ?? '')), Failed: () => undefined },
             ReportNow: async () =>
             {
-                this.Reports.push('report after ' + this.Executor.Applied.join(','))
+                this.Reports.push('report after ' + ((this.Executor as Partial<RecordingExecutor>).Applied ?? []).join(','))
             },
+            ...(holder === undefined ? {} : { Lease: new IntentLease(this.Kube, IntentWorld.Namespace, holder, this.Clock) }),
         })
+        return new AgentPod(signing, trust, store, puller)
+    }
+
+    /** The recording executor (the default one). */
+    public get Recorded(): RecordingExecutor
+    {
+        return this.Executor as RecordingExecutor
     }
 
     public Publish(action: IntentAction = IntentWorld.CreateEnvironment(), level?: HiveLevel, lifetimeMs?: number, intentId?: string): string
