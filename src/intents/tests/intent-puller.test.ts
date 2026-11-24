@@ -184,6 +184,23 @@ describe('IntentPuller', () =>
         assert.equal(world.Platform.ReceivedOf(MessageKind.IntentDecision).length, 0)
     })
 
+    it('a tampered kept intent waiting to be applied fails its recheck at apply', async () =>
+    {
+        const world = await IntentWorld.Enrolled(HiveLevel.Delegated)
+        world.Executor.Answer = intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applying)
+        world.Publish(IntentWorld.CreateEnvironment('staging'))
+        await world.Puller.Tick()
+        const key = FakeHiveKube.Key(IntentWorld.Namespace, IntentStore.ConfigMapName)
+        const map = world.Kube.ConfigMaps.get(key)!
+        const kept = JSON.parse(map.Data['intents.json']!) as { Envelope: string }[]
+        kept[0]!.Envelope = kept[0]!.Envelope.replace('"staging"', '"stagin9"')
+        world.Kube.ConfigMaps.set(key, new KubeConfigMap({ ...map.Data, 'intents.json': JSON.stringify(kept) }, map.ResourceVersion))
+        await world.Restart()
+        await world.Puller.Tick()
+        assert.deepEqual(world.Executor.Applied, ['intent-2'], 'applied once before the tampering, never after')
+        assert.equal(world.Store.Get('intent-2')?.Status.Failure, IntentFailure.RecheckFailed)
+    })
+
     it('an intent signed by another platform or addressed to another hive is never kept', async () =>
     {
         const world = await IntentWorld.Enrolled(HiveLevel.Delegated)
