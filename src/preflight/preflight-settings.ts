@@ -22,6 +22,8 @@ export class PreflightSettings
     public static readonly ConsoleHostEnv = 'PRAGMATIC_PREFLIGHT_CONSOLE_HOST'
     public static readonly IdpHostEnv = 'PRAGMATIC_PREFLIGHT_IDP_HOST'
     public static readonly BaseDomainEnv = 'PRAGMATIC_PREFLIGHT_BASE_DOMAIN'
+    public static readonly TenantIdEnv = 'PRAGMATIC_PREFLIGHT_TENANT_ID'
+    public static readonly HiveIdEnv = 'PRAGMATIC_PREFLIGHT_HIVE_ID'
     public static readonly ConsoleAddressEnv = 'PRAGMATIC_PREFLIGHT_CONSOLE_ADDRESS'
     public static readonly TlsSecretEnv = 'PRAGMATIC_PREFLIGHT_TLS_SECRET'
     public static readonly TlsModeEnv = 'PRAGMATIC_PREFLIGHT_TLS_MODE'
@@ -38,6 +40,8 @@ export class PreflightSettings
         public readonly ConsoleHost: string,
         public readonly IdpHost: string | undefined,
         public readonly BaseDomain: string | undefined,
+        public readonly TenantId: string | undefined,
+        public readonly HiveId: string | undefined,
         public readonly Address: ConsoleAddress,
         public readonly TlsSecret: string | undefined,
         public readonly Tls: TlsMode,
@@ -74,6 +78,8 @@ export class PreflightSettings
             S.Required(env, S.ConsoleHostEnv),
             S.Optional(env, S.IdpHostEnv),
             S.Optional(env, S.BaseDomainEnv),
+            S.Optional(env, S.TenantIdEnv),
+            S.Optional(env, S.HiveIdEnv),
             S.OneOf(env, S.ConsoleAddressEnv, Object.values(ConsoleAddress), ConsoleAddress.OwnDomain),
             S.Optional(env, S.TlsSecretEnv),
             S.OneOf(env, S.TlsModeEnv, Object.values(TlsMode), TlsMode.Secret),

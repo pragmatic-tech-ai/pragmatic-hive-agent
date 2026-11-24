@@ -1,6 +1,7 @@
 import { HttpsKubeTransport, InClusterServiceAccount, KubeApiClient, type IKubeTransport } from '@pragmatic-tech-ai/pragmatic-kube'
 import { ClusterVersionCheck } from './cluster-version-check.js'
 import { DnsNameCheck, NodeHostResolver, type IHostResolver } from './dns-name-check.js'
+import { EngineIdentityCheck } from './engine-identity-check.js'
 import { IngressClassCheck } from './ingress-class-check.js'
 import { Preflight } from './preflight.js'
 import { PreflightOutcome, type IPreflightCheck, type PreflightResult } from './preflight-check.js'
@@ -48,13 +49,18 @@ export class PreflightCli
     /** The checks in the order they report. */
     public static Checks(client: KubeApiClient, settings: PreflightSettings, resolver: IHostResolver = new NodeHostResolver()): IPreflightCheck[]
     {
-        return [
+        const checks: IPreflightCheck[] = [
             new ClusterVersionCheck(client),
             new StorageClassCheck(client, settings.StorageClass),
             new IngressClassCheck(client, settings.IngressClass, settings.Address),
             new DnsNameCheck(settings.Hosts, settings.Address, resolver),
             new TlsCheck(client, settings.Namespace, settings.Tls, settings.TlsSecret, settings.Hosts),
         ]
+        if (settings.TenantId !== undefined && settings.HiveId !== undefined)
+        {
+            checks.push(new EngineIdentityCheck(client, settings.Namespace, settings.TenantId, settings.HiveId))
+        }
+        return checks
     }
 
     /** Runs in the pod: `transport` and `resolver` replace the service account's and the cluster's (tests). */

@@ -57,6 +57,8 @@ class PreflightFixture
             PRAGMATIC_PREFLIGHT_CONSOLE_HOST: 'console.example.com',
             PRAGMATIC_PREFLIGHT_IDP_HOST: 'idp-console.example.com',
             PRAGMATIC_PREFLIGHT_BASE_DOMAIN: 'example.com',
+            PRAGMATIC_PREFLIGHT_TENANT_ID: 'acme',
+            PRAGMATIC_PREFLIGHT_HIVE_ID: 'acme-hive',
             PRAGMATIC_PREFLIGHT_CONSOLE_ADDRESS: 'own-domain',
             PRAGMATIC_PREFLIGHT_TLS_MODE: 'secret',
             PRAGMATIC_PREFLIGHT_TLS_SECRET: 'console-tls',
@@ -101,7 +103,7 @@ describe('PreflightCli', () =>
         const output = new RecordingOutput()
         const code = await PreflightCli.Run(PreflightFixture.Env(), output, new FakeKubeTransport(PreflightFixture.Cluster()), new FixedResolver(PreflightFixture.Hosts))
         assert.equal(code, 0, output.Lines.join('\n'))
-        for (const name of ['cluster-version', 'storage-class', 'ingress-class', 'dns-name', 'tls'])
+        for (const name of ['cluster-version', 'storage-class', 'ingress-class', 'dns-name', 'tls', 'engine-identity'])
         {
             assert.ok(output.Lines.some(line => line.startsWith('pass') && line.includes(' ' + name + ': ')), name)
         }
