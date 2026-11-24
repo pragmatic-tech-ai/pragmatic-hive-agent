@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-    HiveLevel, HiveReport, Intent, IntentFailure, IntentProgress, MessageKind, Rotate, RotationSubject, SigningKeyPair,
+    EnvelopeSigner, HiveKeyRotation, HiveKeyRotationAck, HiveLevel, HiveReport, Intent, IntentFailure, IntentProgress, MessageKind, Participant, Rotate, RotationSubject,
+    SigningKeyPair, type IAgentChannel, type SignedEnvelope, type VerifiedMessage,
 } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import { FakePlatform } from '@pragmatic-tech-ai/pragmatic-hive-protocol/testing'
 import { EnrolmentState } from '../../enrolment/enrolment-state.js'
@@ -22,6 +23,11 @@ class RotationCases
     public static Report(): HiveReport
     {
         return HiveReport.Create({ EngineVersion: '0.1.0', Components: [], Environments: [], Intents: [] })
+    }
+
+    public static async Retry(world: IntentWorld, channel: IAgentChannel, verified: VerifiedMessage<Intent>, rotate: Rotate): Promise<IntentProgress>
+    {
+        return (await new RotateHandler(world.Trust, world.Signing, channel, new EnvironmentIntentForwarder(undefined)).Apply(verified, rotate)).Progress
     }
 
     public static async WithIdentity(world: IntentWorld): Promise<void>
@@ -80,14 +86,14 @@ describe('RotateHandler', () =>
         const verified = await world.Trust.Verifier().Verify(envelope, MessageKind.Intent, Intent)
 
         const silent = new RotateHandler(world.Trust, world.Signing, { Exchange: async () => null }, new EnvironmentIntentForwarder(undefined))
-        assert.equal((await silent.Apply(verified, rotate)).Failure, IntentFailure.RotationRefused)
+        assert.equal((await silent.Apply(verified, rotate)).Progress, IntentProgress.Applying, 'no answer: sent again next tick')
         assert.equal(world.Signing.Key.KeyId, before.KeyId)
         const secret = world.Kube.Secrets.get(FakeHiveKube.Key(IntentWorld.Namespace, HiveIdentity.SecretName))!
         assert.equal(SigningKeyPair.FromPrivatePem(secret[HiveIdentity.KeyName]!).KeyId, before.KeyId)
-        assert.ok(secret[HiveIdentity.PendingKeyName] !== undefined)
+        const pending = SigningKeyPair.FromPrivatePem(secret[HiveIdentity.PendingKeyName]!)
 
         assert.equal((await RotationCases.Handler(world).Apply(verified, rotate)).Progress, IntentProgress.Applied)
-        assert.notEqual(world.Signing.Key.KeyId, before.KeyId)
+        assert.equal(world.Signing.Key.KeyId, pending.KeyId, 'the retry re-sent the same new key')
         assert.ok(world.Platform.Record(world.Signing.Self)?.PublicKey.Equals(world.Signing.Key.PublicKey))
         const after = world.Kube.Secrets.get(FakeHiveKube.Key(IntentWorld.Namespace, HiveIdentity.SecretName))!
         assert.deepEqual(Object.keys(after), [HiveIdentity.KeyName])
@@ -121,6 +127,53 @@ describe('RotateHandler', () =>
         assert.notEqual(world.Signing.Key.KeyId, before.KeyId)
         assert.ok(world.Platform.Record(world.Signing.Self)?.PublicKey.Equals(world.Signing.Key.PublicKey))
         assert.equal(await HiveIdentity.Pending(world.Kube, IntentWorld.Namespace), undefined)
+    })
+
+    it('a lost ack: the agent re-sends, gets the ack again, swaps; and after a crash between the platform\'s switch and the agent\'s swap it recovers with the pending key', async () =>
+    {
+        const world = await IntentWorld.Enrolled(HiveLevel.Delegated)
+        await RotationCases.WithIdentity(world)
+        const before = world.Signing.Key
+        const rotate = new Rotate(RotationSubject.HiveKey, null)
+        const verified = await world.Trust.Verifier().Verify(world.Platform.PublishIntent(world.HiveId, rotate), MessageKind.Intent, Intent)
+        // The platform takes the rotation and switches; its acknowledgement is lost on the way back.
+        const losing = { Exchange: async (request: SignedEnvelope) => { await world.Channel.Exchange(request); throw new Error('connection reset') } }
+        assert.equal((await new RotateHandler(world.Trust, world.Signing, losing, new EnvironmentIntentForwarder(undefined)).Apply(verified, rotate)).Progress, IntentProgress.Applying)
+        assert.equal(world.Signing.Key.KeyId, before.KeyId)
+        const pending = (await HiveIdentity.Pending(world.Kube, IntentWorld.Namespace))!
+        assert.ok(world.Platform.Record(world.Signing.Self)?.PublicKey.Equals(pending.PublicKey), 'the platform switched')
+
+        // A platform that acknowledges the same rotation again (idempotent re-ack): the agent re-sends and swaps.
+        const signer = new EnvelopeSigner(world.Platform.SigningKey, Participant.Platform, world.Clock)
+        const reAcking = {
+            Exchange: async (request: SignedEnvelope) =>
+            {
+                const rotation = HiveKeyRotation.Parse(request.Body)
+                assert.equal(request.KeyId, before.KeyId, 'still signed with the old key')
+                assert.equal(rotation.NewPublicKey.KeyId, pending.KeyId, 'the same new key')
+                return signer.Sign(MessageKind.HiveKeyRotationAck, request.Issuer, HiveKeyRotationAck.Create(world.HiveId, rotation.NewPublicKey.KeyId))
+            },
+        }
+        const reacked = await RotationCases.Retry(world, reAcking, verified, rotate)
+        assert.equal(reacked, IntentProgress.Applied)
+        assert.equal(world.Signing.Key.KeyId, pending.KeyId)
+        assert.equal(await HiveIdentity.Pending(world.Kube, IntentWorld.Namespace), undefined)
+    })
+
+    it('a platform that refuses the old key after its switch: the agent proves the pending key and swaps', async () =>
+    {
+        const world = await IntentWorld.Enrolled(HiveLevel.Delegated)
+        await RotationCases.WithIdentity(world)
+        const before = world.Signing.Key
+        const rotate = new Rotate(RotationSubject.HiveKey, null)
+        const verified = await world.Trust.Verifier().Verify(world.Platform.PublishIntent(world.HiveId, rotate), MessageKind.Intent, Intent)
+        const losing = { Exchange: async (request: SignedEnvelope) => { await world.Channel.Exchange(request); throw new Error('connection reset') } }
+        await new RotateHandler(world.Trust, world.Signing, losing, new EnvironmentIntentForwarder(undefined)).Apply(verified, rotate)
+        // The re-sent rotation under the old key is refused (the platform knows only the new key now): the pending key works.
+        assert.equal(await RotationCases.Retry(world, world.Channel, verified, rotate), IntentProgress.Applied)
+        assert.notEqual(world.Signing.Key.KeyId, before.KeyId)
+        assert.ok(world.Platform.Record(world.Signing.Self)?.PublicKey.Equals(world.Signing.Key.PublicKey))
+        await world.Channel.Exchange(world.Signing.Sign(MessageKind.HiveReport, RotationCases.Report()))
     })
 
     it('the ingress certificate rotation is the console\'s', async () =>

@@ -1,5 +1,6 @@
 import {
-    EnvelopeSigner, HiveKeyRotation, HiveKeyRotationAck, MessageKind, Participant, SigningKeyPair, SystemProtocolClock,
+    AgentChannelUnavailableError, AgentExchangeRefusal, EnvelopeSigner, HiveKeyRotation, HiveKeyRotationAck, MessageKind, Participant, ProtocolVerificationError, Pull,
+    SigningKeyPair, SystemProtocolClock,
     type EnvelopeVerifier, type IAgentChannel, type IMessageBody, type IProtocolClock, type SignedEnvelope,
 } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import type { IHiveKube } from '../kube/hive-kube.js'
@@ -15,6 +16,19 @@ export class HiveKeyRotationRefusedError extends Error
     {
         super(HiveKeyRotationRefusedError.Text)
         this.name = HiveKeyRotationRefusedError.ErrorName
+    }
+}
+
+/** The platform acknowledged another hive or key than the one announced. */
+export class HiveKeyRotationMismatchError extends Error
+{
+    private static readonly ErrorName = 'HiveKeyRotationMismatchError'
+    private static readonly Text = 'the platform acknowledged another hive key'
+
+    public constructor()
+    {
+        super(HiveKeyRotationMismatchError.Text)
+        this.name = HiveKeyRotationMismatchError.ErrorName
     }
 }
 
@@ -62,15 +76,32 @@ export class HiveSigning
     }
 
     /**
-     * Rotates the hive key: the next key kept as pending first, the rotation sent under the current key, the platform's
-     * answer verified (`verifier`: the trust root) and checked to name this hive and the new key; only then is the new
-     * key the hive key, in the Secret and here.
+     * Rotates the hive key: the next key kept as pending first (a retry re-sends the same one), the rotation sent under
+     * the current key, the platform's answer verified (`verifier`: the trust root) and checked to name this hive and the
+     * new key; only then is the new key the hive key, in the Secret and here. When the platform no longer verifies the
+     * current key (it switched, and an earlier acknowledgement was lost), the pending key is tried with a harmless pull
+     * and, accepted, adopted. A lost answer otherwise throws: the caller sends the same rotation again later.
      */
     public async Rotate(channel: IAgentChannel, verifier: EnvelopeVerifier): Promise<HiveKeyRotationAck>
     {
         const next = (await HiveIdentity.Pending(this.kube, this.namespace)) ?? SigningKeyPair.Generate()
         await HiveIdentity.WritePending(this.kube, this.namespace, this.key, next)
-        const reply = await channel.Exchange(this.Sign(MessageKind.HiveKeyRotation, HiveKeyRotation.Create(this.HiveId, this.key.KeyId, next)))
+        let reply: SignedEnvelope | null
+        try
+        {
+            reply = await channel.Exchange(this.Sign(MessageKind.HiveKeyRotation, HiveKeyRotation.Create(this.HiveId, this.key.KeyId, next)))
+        }
+        catch (error)
+        {
+            if (!HiveSigning.NotVerified(error))
+            {
+                throw error
+            }
+            // The platform already holds the new key: prove it with the pending key, then adopt it.
+            await channel.Exchange(this.SignWith(next, MessageKind.Pull, Pull.Create(0, 1)))
+            await this.Adopt(next)
+            return HiveKeyRotationAck.Create(this.HiveId, next.KeyId)
+        }
         if (reply === null)
         {
             throw new HiveKeyRotationRefusedError()
@@ -78,10 +109,16 @@ export class HiveSigning
         const ack = (await verifier.Verify(reply, MessageKind.HiveKeyRotationAck, HiveKeyRotationAck)).Body
         if (ack.HiveId !== this.HiveId || ack.KeyId !== next.KeyId)
         {
-            throw new HiveKeyRotationRefusedError()
+            throw new HiveKeyRotationMismatchError()
         }
         await this.Adopt(next)
         return ack
+    }
+
+    /** The platform did not verify the message (over HTTP its refusal code; in process, the verifier's error). */
+    public static NotVerified(error: unknown): boolean
+    {
+        return (error instanceof AgentChannelUnavailableError && error.Code === AgentExchangeRefusal.NotVerified) || error instanceof ProtocolVerificationError
     }
 
     /** Makes `key` the hive key (acknowledged by the platform, or found to be the one it knows). */

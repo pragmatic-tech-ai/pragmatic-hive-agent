@@ -1,6 +1,6 @@
-import { IntentFailure, IntentProgress, IntentStatus, RotationSubject, type IAgentChannel, type Intent, type Rotate, type VerifiedMessage } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { IntentFailure, IntentProgress, IntentStatus, ProtocolVerificationError, RotationSubject, type IAgentChannel, type Intent, type Rotate, type VerifiedMessage } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import type { PlatformTrust } from '../../enrolment/platform-trust.js'
-import type { HiveSigning } from '../../identity/hive-signing.js'
+import { HiveKeyRotationMismatchError, type HiveSigning } from '../../identity/hive-signing.js'
 import type { EnvironmentIntentForwarder } from './environment-intent-forwarder.js'
 
 /**
@@ -43,9 +43,13 @@ export class RotateHandler
                     await this.signing.Rotate(this.channel, this.trust.Verifier())
                     return IntentStatus.Of(id, IntentProgress.Applied)
                 }
-                catch
+                catch (error)
                 {
-                    return IntentStatus.FailedWith(id, IntentFailure.RotationRefused)
+                    // An acknowledgement that does not verify or names another key is refused for good; a lost one (no
+                    // answer, the platform unreachable) leaves the intent applying: the same rotation is sent again next tick.
+                    return error instanceof ProtocolVerificationError || error instanceof HiveKeyRotationMismatchError
+                        ? IntentStatus.FailedWith(id, IntentFailure.RotationRefused)
+                        : IntentStatus.Of(id, IntentProgress.Applying)
                 }
             case RotationSubject.IngressCertificate:
                 return this.forwarder.Forward(id, action)

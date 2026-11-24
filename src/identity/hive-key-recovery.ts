@@ -1,7 +1,7 @@
-import { AgentChannelUnavailableError, AgentExchangeRefusal, MessageKind, ProtocolVerificationError, type IAgentChannel, type IMessageBody } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { MessageKind, type IAgentChannel, type IMessageBody } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import type { IHiveKube } from '../kube/hive-kube.js'
 import { HiveIdentity } from './hive-identity.js'
-import type { HiveSigning } from './hive-signing.js'
+import { HiveSigning } from './hive-signing.js'
 
 /**
  * A hive key rotation interrupted after the new key was announced (C3.4): at start, with a pending key beside the
@@ -31,7 +31,7 @@ export class HiveKeyRecovery
         }
         catch (error)
         {
-            if (!HiveKeyRecovery.NotVerified(error))
+            if (!HiveSigning.NotVerified(error))
             {
                 throw error
             }
@@ -39,11 +39,5 @@ export class HiveKeyRecovery
         await channel.Exchange(this.signing.SignWith(pending, MessageKind.HiveReport, report))
         await this.signing.Adopt(pending)
         return true
-    }
-
-    /** The platform did not verify the message (over HTTP its refusal code; in process, the verifier's error). */
-    private static NotVerified(error: unknown): boolean
-    {
-        return (error instanceof AgentChannelUnavailableError && error.Code === AgentExchangeRefusal.NotVerified) || error instanceof ProtocolVerificationError
     }
 }
