@@ -1,14 +1,13 @@
 import {
-    ComponentReport, ComponentState, EnvironmentReadiness, EnvironmentStatus, HiveReport, MessageKind, ProtocolNames,
+    ComponentReport, ComponentState, HiveReport, MessageKind,
     type IAgentChannel, type IntentStatus,
 } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import type { HiveSigning } from '../identity/hive-signing.js'
-import { AgentWiring } from '../agent-wiring.js'
 import { HiveAgentComponent } from '../hive-agent-component.js'
-import type { IServerDeployment } from '../k8s-api.js'
 import { KubeWorkloadKind, type IHiveKube } from '../kube/hive-kube.js'
 import type { ITickTarget } from '../tick-loop.js'
 import type { EnrolmentRecord } from './enrolment-state.js'
+import type { IEnvironmentSource } from './environment-sources.js'
 
 /** One engine workload the report states (its component name, where it runs, what kind of workload). */
 export class ReportedWorkload
@@ -18,11 +17,6 @@ export class ReportedWorkload
     }
 }
 
-/** Where the report's environments come from: the hive's environment server Deployments. */
-export interface IEnvironmentLister
-{
-    ListServerDeployments(labelSelector: string): Promise<ReadonlyArray<IServerDeployment>>
-}
 
 /** Where the report's intent statuses come from (the kept intents, C3.4). */
 export interface IIntentStatusSource
@@ -45,9 +39,8 @@ export interface HiveReporterOptions
     Enrolment: EnrolmentRecord
     Channel: IAgentChannel
     Kube: IHiveKube
-    Environments: IEnvironmentLister
-    /** The install's hive name (the label the engine's environments carry). */
-    InstallHive: string
+    /** The hive's environments: the console's (Enrolled, Delegated), the Deployments (Hosted). */
+    Environments: IEnvironmentSource
     EngineVersion: string
     Workloads: readonly ReportedWorkload[]
     Log: IReportLog
@@ -63,8 +56,6 @@ export interface HiveReporterOptions
 export class HiveReporter implements ITickTarget
 {
     public static readonly AgentComponent = HiveAgentComponent.Name
-    private static readonly DigestSeparator = '@'
-    private static readonly TagSeparator = ':'
 
     public constructor(private readonly options: HiveReporterOptions)
     {
@@ -93,27 +84,7 @@ export class HiveReporter implements ITickTarget
             // The agent knows its own version (the release's); the others' it does not read, so it claims none.
             components.push(new ComponentReport(workload.Component, state, null))
         }
-        const deployments = await o.Environments.ListServerDeployments(AgentWiring.LabelSelector(o.InstallHive))
-        // One entry per environment name a report can carry (a DNS label, each once, at most the report's limit).
-        const seen = new Set<string>()
-        const environments: EnvironmentStatus[] = []
-        for (const item of deployments)
-        {
-            const name = AgentWiring.EnvironmentName(item.namespace)
-            if (!ProtocolNames.Label.test(name) || seen.has(name) || environments.length >= HiveReport.MaxEnvironments)
-            {
-                continue
-            }
-            seen.add(name)
-            environments.push(new EnvironmentStatus(name, item.ready ? EnvironmentReadiness.Ready : EnvironmentReadiness.NotReady, HiveReporter.VersionOf(item.runningImage)))
-        }
+        const environments = await o.Environments.Environments()
         return HiveReport.Create({ EngineVersion: o.EngineVersion, Components: components, Environments: environments, Intents: o.Intents?.Statuses(HiveReport.MaxIntents) ?? [] })
-    }
-
-    /** An image's tag when it is a version (`…:1.2.3`), else none: the report carries no free text. */
-    private static VersionOf(image: string | undefined): string | null
-    {
-        const tag = image?.split(HiveReporter.DigestSeparator)[0]?.split(HiveReporter.TagSeparator).at(-1)
-        return tag !== undefined && ProtocolNames.Version.test(tag) ? tag : null
     }
 }

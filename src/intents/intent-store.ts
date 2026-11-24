@@ -18,7 +18,9 @@ export class KeptIntent
         /** The pull cursor of the batch it came in (the agent's own upgrade waits for the rest of its batch). */
         public readonly Batch: number = 0,
         /** Its settled status has been in a report the platform took (only then may it be pruned). */
-        public readonly Reported: boolean = false)
+        public readonly Reported: boolean = false,
+        /** Sent back to waiting because it was applying without Delegated mode or a valid approval. */
+        public readonly Demoted: boolean = false)
     {
     }
 
@@ -43,10 +45,27 @@ export class KeptIntent
         return KeptIntent.SettledProgress.includes(this.Status.Progress)
     }
 
-    /** How far it got: waiting, applying, settled (a merge keeps the furthest). */
+    /**
+     * How far it got, for a merge (the higher wins): settled; applying with an approval; demoted (applying without one was
+     * sent back to waiting, so a stale applying copy never undoes that); applying; waiting.
+     */
     public get Rank(): number
     {
-        return this.Settled ? 2 : this.Progress === IntentProgress.Applying ? 1 : 0
+        if (this.Settled)
+        {
+            return 4
+        }
+        if (this.Progress === IntentProgress.Applying)
+        {
+            return this.Decision !== null ? 3 : 1
+        }
+        return this.Demoted ? 2 : 0
+    }
+
+    /** Back to waiting for an approval (applying without Delegated mode or a valid approval). */
+    public Demote(): KeptIntent
+    {
+        return new KeptIntent(this.Envelope, this.Intent, IntentStatus.Of(this.IntentId, IntentProgress.AwaitingApproval), this.PreviousImage, this.Decision, this.Batch, false, true)
     }
 
     public With(progress: IntentProgress): KeptIntent
@@ -66,17 +85,17 @@ export class KeptIntent
 
     public WithPrevious(image: string): KeptIntent
     {
-        return new KeptIntent(this.Envelope, this.Intent, this.Status, image, this.Decision, this.Batch, this.Reported)
+        return new KeptIntent(this.Envelope, this.Intent, this.Status, image, this.Decision, this.Batch, this.Reported, this.Demoted)
     }
 
     public WithDecision(decision: SignedEnvelope): KeptIntent
     {
-        return new KeptIntent(this.Envelope, this.Intent, this.Status, this.PreviousImage, decision, this.Batch, this.Reported)
+        return new KeptIntent(this.Envelope, this.Intent, this.Status, this.PreviousImage, decision, this.Batch, this.Reported, false)
     }
 
     public AsReported(): KeptIntent
     {
-        return new KeptIntent(this.Envelope, this.Intent, this.Status, this.PreviousImage, this.Decision, this.Batch, true)
+        return new KeptIntent(this.Envelope, this.Intent, this.Status, this.PreviousImage, this.Decision, this.Batch, true, this.Demoted)
     }
 
     public View(): KeptIntentView
@@ -130,6 +149,7 @@ interface IKeptIntentJson
     Decision: string | null
     Batch: number
     Reported: boolean
+    Demoted: boolean
 }
 
 /**
@@ -317,7 +337,7 @@ export class IntentStore
     {
         const entries: IKeptIntentJson[] = intents.map(intent => ({
             Envelope: intent.Envelope.Encode(), Status: intent.Status.ToJson(), PreviousImage: intent.PreviousImage,
-            Decision: intent.Decision?.Encode() ?? null, Batch: intent.Batch, Reported: intent.Reported,
+            Decision: intent.Decision?.Encode() ?? null, Batch: intent.Batch, Reported: intent.Reported, Demoted: intent.Demoted,
         }))
         return JSON.stringify(entries)
     }
@@ -365,7 +385,7 @@ export class IntentStore
                 }
                 const decision = typeof entry.Decision === 'string' ? SignedEnvelope.Decode(entry.Decision) : null
                 const batch = Number.isSafeInteger(entry.Batch) ? entry.Batch : 0
-                kept.push(new KeptIntent(envelope, intent, status, typeof entry.PreviousImage === 'string' ? entry.PreviousImage : null, decision, batch, entry.Reported === true))
+                kept.push(new KeptIntent(envelope, intent, status, typeof entry.PreviousImage === 'string' ? entry.PreviousImage : null, decision, batch, entry.Reported === true, entry.Demoted === true))
             }
             catch
             {

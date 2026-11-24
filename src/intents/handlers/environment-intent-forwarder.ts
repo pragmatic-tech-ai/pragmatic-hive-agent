@@ -4,7 +4,7 @@ import {
 } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 
 /** How the forwarder posts (global fetch; a test's fake). */
-export type ConsoleFetch = (url: string, init: { method: string, headers: Record<string, string>, body: string, signal: AbortSignal }) => Promise<{ status: number, text(): Promise<string> }>
+export type ConsoleFetch = (url: string, init: { method: string, headers: Record<string, string>, body?: string, signal: AbortSignal }) => Promise<{ status: number, text(): Promise<string> }>
 
 /**
  * The environment intents and the ingress-certificate rotation go to the engine's console (C3.4 ruling "who applies

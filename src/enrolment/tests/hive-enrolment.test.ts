@@ -11,6 +11,7 @@ import { FakeHiveKube } from '../../kube/tests/fake-hive-kube.js'
 import { EnrolmentState, EnrolmentStateUnreadableError } from '../enrolment-state.js'
 import { HiveEnrolment, HiveEnrolmentRefusedError } from '../hive-enrolment.js'
 import { HiveReporter, ReportedWorkload } from '../hive-reporter.js'
+import { DeploymentEnvironmentSource } from '../environment-sources.js'
 import { HiveSigning } from '../../identity/hive-signing.js'
 
 /** A channel that refuses every message with the platform's code (as HttpAgentChannel raises it). */
@@ -98,8 +99,8 @@ describe('HiveEnrolment', () =>
         const workload = new ReportedWorkload('pragmatic-tenant-admin', EnrolmentWorld.Namespace, KubeWorkloadKind.Deployment, 'pragmatic-tenant-admin-acme')
         world.Kube.Workloads.set(FakeHiveKube.Key(EnrolmentWorld.Namespace, KubeWorkloadKind.Deployment + '/pragmatic-tenant-admin-acme'), true)
         const reporter = new HiveReporter({
-            Signing: new HiveSigning(world.Key, record.HiveId, world.Kube, EnrolmentWorld.Namespace, world.Clock), Enrolment: record, Channel: world.Channel, Kube: world.Kube, InstallHive: 'acme-hive', EngineVersion: EnrolmentWorld.Version, Workloads: [workload],
-            Environments: new FixedEnvironments([{ namespace: 'pragmatic-env-dev-one', deployment: 'server', container: 'server', runningImage: 'ghcr.io/x/env-server:0.1.4@sha256:abc', ready: true }]),
+            Signing: new HiveSigning(world.Key, record.HiveId, world.Kube, EnrolmentWorld.Namespace, world.Clock), Enrolment: record, Channel: world.Channel, Kube: world.Kube, EngineVersion: EnrolmentWorld.Version, Workloads: [workload],
+            Environments: new DeploymentEnvironmentSource(new FixedEnvironments([{ namespace: 'pragmatic-env-dev-one', deployment: 'server', container: 'server', runningImage: 'ghcr.io/x/env-server:0.1.4@sha256:abc', ready: true }]), 'acme-hive'),
             Log: { Failed: () => undefined },
         })
         await reporter.Tick()

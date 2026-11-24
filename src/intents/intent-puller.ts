@@ -55,6 +55,8 @@ export interface IntentPullerOptions
     ReportNow?: () => Promise<void>
     /** At most this many full batches per tick (then the next tick goes on). */
     MaxBatches?: number
+    /** How often the lease is renewed while one apply runs (a roll may take minutes). */
+    LeaseRenewMs?: number
 }
 
 /** The apply context over the kept intent as it is now (what NotePrevious recorded is what a revert reads). */
@@ -97,6 +99,9 @@ class KeptApplyContext implements IApplyContext
 export class IntentPuller implements ITickTarget, IIntentDesk
 {
     public static readonly DefaultMaxBatches = 10
+    /** A third of the lease's duration. */
+    public static readonly DefaultLeaseRenewMs = 30_000
+    private static readonly LeaseErrorEvent = 'intent-lease-error'
     private static readonly SkippedEvent = 'intent-skipped'
     private static readonly AdmittedEvent = 'intent-admitted'
     private static readonly SettledEvent = 'intent-settled'
@@ -341,7 +346,7 @@ export class IntentPuller implements ITickTarget, IIntentDesk
         if (!this.Authorized(kept))
         {
             // Applying without Delegated mode or a valid approval (an edited ConfigMap): back to waiting for one.
-            o.Store.Put(kept.With(IntentProgress.AwaitingApproval))
+            o.Store.Put(kept.Demote())
             o.Log.Event(IntentPuller.NotApprovedEvent)
             await o.Store.Save()
             return
@@ -351,6 +356,13 @@ export class IntentPuller implements ITickTarget, IIntentDesk
             await o.ReportNow()
         }
         const context = new KeptApplyContext(kept, o.Store)
+        // A roll may outlast the lease: it is renewed while this apply runs.
+        const lease = o.Lease
+        const renewal = lease === undefined ? undefined : setInterval(() =>
+        {
+            void lease.Acquire().catch(error => o.Log.Event(IntentPuller.LeaseErrorEvent, error instanceof Error ? error.name : IntentPuller.UnknownError))
+        }, o.LeaseRenewMs ?? IntentPuller.DefaultLeaseRenewMs)
+        renewal?.unref()
         let status: IntentStatus
         try
         {
@@ -360,6 +372,10 @@ export class IntentPuller implements ITickTarget, IIntentDesk
         {
             o.Log.Event(IntentPuller.ApplyErrorEvent, error instanceof Error ? error.name : IntentPuller.UnknownError)
             status = IntentStatus.FailedWith(kept.IntentId, IntentFailure.ApplyFailed)
+        }
+        finally
+        {
+            clearInterval(renewal)
         }
         o.Store.Put(context.Kept.WithStatus(status))
         await o.Store.Save()
@@ -461,7 +477,14 @@ export class IntentPuller implements ITickTarget, IIntentDesk
         {
             throw new IntentDecisionRefusedError(R.Unavailable)
         }
-        const decided = kept.WithDecision(decision).With(call.Decision === IntentChoice.Approve ? IntentProgress.Applying : IntentProgress.Rejected)
+        // What a tick or another pod did meanwhile (an expiry above all) wins over this decision.
+        await o.Store.Refresh()
+        const current = o.Store.Get(intentId)
+        if (current === undefined || current.Digest !== kept.Digest || current.Progress !== IntentProgress.AwaitingApproval)
+        {
+            return (current ?? kept).View()
+        }
+        const decided = current.WithDecision(decision).With(call.Decision === IntentChoice.Approve ? IntentProgress.Applying : IntentProgress.Rejected)
         o.Store.Put(decided)
         await o.Store.Save()
         o.Log.Event(IntentPuller.DecidedEvent, call.Decision)

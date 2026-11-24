@@ -19,6 +19,7 @@ import { IntentLoop } from '../intents/intent-loop.js'
 import type { IntentPuller } from '../intents/intent-puller.js'
 import type { IntentStore } from '../intents/intent-store.js'
 import { PlatformTrust } from './platform-trust.js'
+import { ConsoleEnvironmentSource, DeploymentEnvironmentSource } from './environment-sources.js'
 import { IntentLease } from '../intents/intent-lease.js'
 
 /** The connected agent's log lines: events and codes only. */
@@ -159,8 +160,9 @@ export class ConnectedAgent
             })
         }
         const reporter: HiveReporter = new HiveReporter({
-            Signing: signing, Intents: loop?.Store, Enrolment: record, Channel: channel, Kube: kube, Environments: new InClusterK8sApi(),
-            InstallHive: installHive, EngineVersion: settings.EngineVersion, Log: log,
+            Signing: signing, Intents: loop?.Store, Enrolment: record, Channel: channel, Kube: kube,
+            Environments: hosted !== undefined ? new DeploymentEnvironmentSource(new InClusterK8sApi(), installHive) : new ConsoleEnvironmentSource(settings.ConsoleIntentUrl, settings.ConsoleTokenFile),
+            EngineVersion: settings.EngineVersion, Log: log,
             Workloads: [
                 new ReportedWorkload(C.ConsoleComponent, settings.Namespace, KubeWorkloadKind.Deployment, settings.ConsoleDeployment),
                 new ReportedWorkload(C.IdpComponent, settings.IdpNamespace, KubeWorkloadKind.Deployment, settings.IdpDeployment),

@@ -1,13 +1,13 @@
 import { IntentFailure, IntentProgress, IntentStatus, RotationSubject, type IAgentChannel, type Intent, type Rotate, type VerifiedMessage } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import type { PlatformTrust } from '../../enrolment/platform-trust.js'
 import { HiveKeyRotationMismatchError, HiveSigning } from '../../identity/hive-signing.js'
+import type { EnvironmentIntentForwarder } from './environment-intent-forwarder.js'
 
 /** Where the pull cursor is read (the store): a key probe pulls at it, never rewinding. */
 export interface IPullCursor
 {
     readonly Cursor: number
 }
-import type { EnvironmentIntentForwarder } from './environment-intent-forwarder.js'
 
 /**
  * "Rotate S" (C3.4). The trust root: the intent itself verified under the current root (and was rechecked just before

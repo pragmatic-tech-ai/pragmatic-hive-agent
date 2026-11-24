@@ -19,6 +19,7 @@ export class ComponentAtVersionHandler
     /** A release image: one of the release registries, the pragmatic-tech-ai organisation, a repository; tag or digest after. */
     public static readonly ReleaseRepository = /^((?:ghcr\.io|registry\.pragmatic-tech\.ai)\/pragmatic-tech-ai\/[a-z0-9][a-z0-9._/-]*)(?::[A-Za-z0-9._-]+)?(?:@sha256:[a-f0-9]{64})?$/
     private static readonly DigestSeparator = '@'
+    private static readonly ByDigest = /@sha256:[a-f0-9]{64}$/
 
     public constructor(private readonly kube: IHiveKube, private readonly workloads: EngineWorkloads, private readonly watch: RolloutWatch)
     {
@@ -55,7 +56,8 @@ export class ComponentAtVersionHandler
     public async Revert(action: ComponentAtVersion, previous: string | null): Promise<void>
     {
         const found = await this.Find(action.Component)
-        if (found === undefined || previous === null || ComponentAtVersionHandler.RepositoryOf(previous) !== found.Repository)
+        // What a revert puts back is read from the ConfigMap: only an image of the same release repository, by digest.
+        if (found === undefined || previous === null || !ComponentAtVersionHandler.ByDigest.test(previous) || ComponentAtVersionHandler.RepositoryOf(previous) !== found.Repository)
         {
             return
         }

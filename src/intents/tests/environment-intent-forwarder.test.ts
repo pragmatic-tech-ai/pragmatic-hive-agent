@@ -22,7 +22,7 @@ class FakeConsole
 
     public readonly Fetch: ConsoleFetch = async (url, init) =>
     {
-        this.Calls.push(new ConsoleCall(url, init.headers, init.body))
+        this.Calls.push(new ConsoleCall(url, init.headers, init.body ?? ''))
         if (this.Fails)
         {
             throw new TypeError('fetch failed')

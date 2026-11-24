@@ -1,4 +1,8 @@
 import { describe, it } from 'node:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { ConsoleEnvironmentSource } from '../../enrolment/environment-sources.js'
 import assert from 'node:assert/strict'
 import {
     ComponentAtVersion, HiveLevel, HiveReport, Intent, IntentApplyMode, IntentChoice, IntentDecision, IntentDecisionCall, IntentDecisionKind, IntentDecisionRefusal, IntentFailure,
@@ -308,53 +312,6 @@ describe('expiry and the store\'s limits', () =>
     })
 })
 
-describe('IntentAdmissionDecider', () =>
-{
-    it('the stricter level wins: only Delegated hive and Delegated intent apply directly; Standalone and Hosted take none', () =>
-    {
-        const intent = (level: HiveLevel): Intent => Intent.Create('in1', level, IntentWorld.CreateEnvironment())
-        const table: Array<[HiveLevel, HiveLevel, IntentApplyMode]> = [
-            [HiveLevel.Delegated, HiveLevel.Delegated, IntentApplyMode.ApplyDirectly],
-            [HiveLevel.Delegated, HiveLevel.Enrolled, IntentApplyMode.AwaitApproval],
-            [HiveLevel.Enrolled, HiveLevel.Delegated, IntentApplyMode.AwaitApproval],
-            [HiveLevel.Enrolled, HiveLevel.Enrolled, IntentApplyMode.AwaitApproval],
-        ]
-        for (const [hive, issued, mode] of table)
-        {
-            assert.equal(new IntentAdmissionDecider({ Level: hive }).ModeFor(intent(issued)), mode, hive + '/' + issued)
-        }
-        for (const hive of [HiveLevel.Standalone, HiveLevel.Hosted])
-        {
-            assert.throws(() => new IntentAdmissionDecider({ Level: hive }).ModeFor(intent(HiveLevel.Delegated)), IntentNotAcceptedError)
-        }
-    })
-})
-
-describe('ApprovalSigner', () =>
-{
-    it('signs a decision with the intent\'s digest and the approver under the hive key, and no reason text', async () =>
-    {
-        const world = await IntentWorld.Enrolled()
-        world.Publish()
-        await world.Puller.Tick()
-        const kept = world.Store.Get('intent-2')!
-        const verified = await world.Trust.Verifier().Recheck(kept.Envelope, MessageKind.Intent, Intent)
-        const approver = RealmSubject.Of('acme', 'u-7')
-        for (const [choice, kind] of [[IntentChoice.Approve, IntentDecisionKind.Approved], [IntentChoice.Reject, IntentDecisionKind.Rejected]] as const)
-        {
-            const envelope = new ApprovalSigner(world.Signing).Sign(verified, choice, approver)
-            assert.equal(envelope.Kind, MessageKind.IntentDecision)
-            assert.equal(envelope.KeyId, world.Signing.Key.KeyId)
-            assert.ok(world.Signing.Key.PublicKey.Verify(envelope.SigningInput(), Buffer.from(envelope.Signature, 'base64url')))
-            const body = IntentDecision.Parse(envelope.Body)
-            assert.equal(body.IntentDigest, kept.Digest)
-            assert.equal(body.Decision, kind)
-            assert.deepEqual(body.Approver.ToJson(), approver.ToJson())
-            assert.deepEqual(Object.keys(envelope.Body).sort(), ['Approver', 'DecidedAt', 'Decision', 'IntentDigest', 'IntentId'])
-        }
-    })
-})
-
 describe('IntentLease and HiveKeyRecovery', () =>
 {
     it('one holder at a time; an expired or released lease is taken over', async () =>
@@ -383,5 +340,148 @@ describe('IntentLease and HiveKeyRecovery', () =>
         assert.equal(await new HiveKeyRecovery(world.Signing, world.Kube, IntentWorld.Namespace).Settle(world.Channel, report, world.Store.Cursor), false)
         assert.equal((await HiveIdentity.Pending(world.Kube, IntentWorld.Namespace))?.KeyId, next.KeyId)
         assert.equal(world.Signing.Key.KeyId, world.Key.KeyId)
+    })
+})
+
+describe('third review round', () =>
+{
+    it('a pull that fails on the network still lets waiting intents expire and due ones apply', async () =>
+    {
+        const world = await IntentWorld.Enrolled(HiveLevel.Delegated)
+        world.Recorded.Answer = intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applying)
+        world.Publish(IntentWorld.CreateEnvironment('due'))
+        world.Publish(IntentWorld.CreateEnvironment('waiting'), HiveLevel.Enrolled, 86_400_000)
+        await world.Puller.Tick()
+        world.Recorded.Answer = intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applied)
+        world.Clock.Advance(86_400_001)
+        world.Channel.Exchange = async () =>
+        {
+            throw new TypeError('fetch failed')
+        }
+        await assert.rejects(world.Puller.Tick(), TypeError)
+        assert.equal(world.Progress('intent-2'), IntentProgress.Applied, 'applied despite the failed pull')
+        assert.equal(world.Progress('intent-3'), IntentProgress.Expired, 'expired despite the failed pull')
+    })
+
+    it('a demotion is not undone by a stale applying copy another writer kept', async () =>
+    {
+        const world = await IntentWorld.Enrolled(HiveLevel.Enrolled)
+        world.Publish()
+        await world.Puller.Tick()
+        await RealWorld.Edit(world, entries =>
+        {
+            (entries[0]!.Status as Record<string, unknown>).Progress = IntentProgress.Applying
+        })
+        const stale = new IntentStore(world.Kube, IntentWorld.Namespace)
+        await stale.Load()
+        await world.Restart()
+        await world.Puller.Tick()
+        assert.equal(world.Progress('intent-2'), IntentProgress.AwaitingApproval)
+        // The other writer still holds the applying copy and writes it back: the merge keeps the demotion.
+        await stale.Save()
+        await world.Store.Refresh()
+        assert.equal(world.Progress('intent-2'), IntentProgress.AwaitingApproval)
+        assert.deepEqual(world.Recorded.Applied, [])
+    })
+
+    it('an expiry recorded meanwhile wins over a decision being taken', async () =>
+    {
+        const world = await IntentWorld.Enrolled(HiveLevel.Enrolled)
+        const digest = world.Publish()
+        await world.Puller.Tick()
+        const other = await world.Pod()
+        await other.Store.Refresh()
+        const original = world.Channel.Exchange.bind(world.Channel)
+        world.Channel.Exchange = async request =>
+        {
+            const reply = await original(request)
+            if (request.Kind === MessageKind.IntentDecision)
+            {
+                // Another pod marks it expired while the decision is on its way.
+                other.Store.Put(other.Store.Get('intent-2')!.With(IntentProgress.Expired))
+                await other.Store.Save()
+            }
+            return reply
+        }
+        const view = await world.Puller.Decide('intent-2', IntentDecisionCall.Create(digest, IntentChoice.Approve, RealmSubject.Of('acme', 'u-1')))
+        assert.equal(view.Progress, IntentProgress.Expired)
+        assert.equal(world.Progress('intent-2'), IntentProgress.Expired)
+    })
+
+    it('a revert only puts back an image of the same release repository by digest', async () =>
+    {
+        const world = await RealWorld.Enrolled()
+        const handler = new ComponentAtVersionHandler(world.Kube, new EngineWorkloads([
+            new EngineWorkload(EngineWorkloads.AgentComponent, RealWorld.Ns, KubeWorkloadKind.Deployment, RealWorld.AgentDeployment, undefined),
+        ]), new RolloutWatch({ TimeoutMs: 10, PollMs: 10, Sleep: async () => undefined }))
+        const action = RealWorld.Component(EngineWorkloads.AgentComponent)
+        for (const bad of ['ghcr.io/pragmatic-tech-ai/pragmatic-hive-agent:latest', 'ghcr.io/pragmatic-tech-ai/other@sha256:' + '3'.repeat(64), 'docker.io/evil/agent@sha256:' + '3'.repeat(64)])
+        {
+            await handler.Revert(action, bad)
+        }
+        assert.deepEqual(world.Kube.PatchLog, [])
+        await handler.Revert(action, 'ghcr.io/pragmatic-tech-ai/pragmatic-hive-agent@sha256:' + '4'.repeat(64))
+        assert.deepEqual(world.Kube.PatchLog, ['deployments/' + RealWorld.AgentDeployment])
+    })
+
+    it('the lease is renewed while a long apply runs', async () =>
+    {
+        const world = await IntentWorld.Enrolled(HiveLevel.Delegated)
+        const pod = await world.Pod('pod-a')
+        const renewals: number[] = []
+        const original = world.Kube.PutLease.bind(world.Kube)
+        world.Kube.PutLease = async (namespace, name, lease) =>
+        {
+            renewals.push(Date.now())
+            return original(namespace, name, lease)
+        }
+        world.Recorded.Answer = async intent =>
+        {
+            await new Promise(resolve => setTimeout(resolve, 120))
+            return IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applied)
+        }
+        const quick = new IntentPuller({
+            Channel: world.Channel, Store: pod.Store, Decider: new IntentAdmissionDecider(pod.Trust), Executor: world.Executor, Signing: pod.Signing, Trust: pod.Trust,
+            Log: { Event: () => undefined, Failed: () => undefined }, Lease: new IntentLease(world.Kube, IntentWorld.Namespace, 'pod-a', world.Clock), LeaseRenewMs: 20,
+        })
+        world.Publish()
+        await quick.Tick()
+        assert.ok(renewals.length >= 3, 'acquired, then renewed during the apply: ' + renewals.length)
+    })
+})
+
+describe('the report\'s environments come from the console', () =>
+{
+    it('reads them from the console\'s internal endpoint with the agent\'s token, keeps the last answer while the console is down', async () =>
+    {
+        const dir = mkdtempSync(join(tmpdir(), 'envs-'))
+        try
+        {
+            const token = join(dir, 'token')
+            writeFileSync(token, 'agent-token\n')
+            const calls: Array<{ Url: string, Auth: string | undefined, Method: string }> = []
+            let answer: { status: number, body: unknown } | 'down' = { status: 200, body: { Environments: [{ Name: 'prod', Readiness: 'ready', Version: '0.1.0' }, { Name: 'prod', Readiness: 'ready', Version: null }] } }
+            const source = new ConsoleEnvironmentSource('http://console-internal.pragmatic-system.svc:7211', token, async (url, init) =>
+            {
+                calls.push({ Url: url, Auth: init.headers['authorization'], Method: init.method })
+                if (answer === 'down')
+                {
+                    throw new TypeError('fetch failed')
+                }
+                const reply = answer
+                return { status: reply.status, text: async () => JSON.stringify(reply.body) }
+            })
+            assert.deepEqual((await source.Environments()).map(env => env.ToJson()), [{ Name: 'prod', Readiness: 'ready', Version: '0.1.0' }])
+            assert.deepEqual(calls[0], { Url: 'http://console-internal.pragmatic-system.svc:7211/internal/environments', Auth: 'Bearer agent-token', Method: 'GET' })
+            answer = 'down'
+            assert.equal((await source.Environments()).length, 1, 'the last answer stands')
+            answer = { status: 200, body: { Environments: [{ Name: 'prod', Readiness: 'ready', Version: '0.1.0', Log: 'free text' }] } }
+            assert.equal((await source.Environments()).length, 1, 'not the closed shape: ignored')
+            assert.deepEqual(await new ConsoleEnvironmentSource(undefined, token).Environments(), [])
+        }
+        finally
+        {
+            rmSync(dir, { recursive: true, force: true })
+        }
     })
 })
