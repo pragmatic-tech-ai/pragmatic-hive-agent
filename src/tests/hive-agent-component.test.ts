@@ -10,10 +10,17 @@ class HiveAgentComponentFixture
 {
     public static readonly Here = dirname(fileURLToPath(import.meta.url))
     public static readonly Golden = join(HiveAgentComponentFixture.Here, 'fixtures', 'pragmatic-hive-agent.component.json')
-    public static readonly Digest = 'sha256:aca69352fec057e678e6a5af7fd2383e20a7e3b8c83aca21ba7ff4ef9af0eda1'
-    public static readonly Readers = [['..', 'agent-main.ts'], ['..', 'agent-settings.ts']].map(path => join(HiveAgentComponentFixture.Here, ...path))
+    public static readonly Digest = 'sha256:4cfc2a041e6006425bdc937e5282ff2680cda173a639cd1d14a07b5e90c22728'
+    public static readonly Readers = [['..', 'agent-main.ts'], ['..', 'agent-settings.ts'], ['..', 'enrolment', 'connected-settings.ts']].map(path => join(HiveAgentComponentFixture.Here, ...path))
     /** Platform-owned: injected by the hive manifests, never tenant-configurable (the descriptor leaves them out). */
-    public static readonly Undeclared: readonly string[] = ['PRAGMATIC_AGENT_REGISTRY_URL', 'PRAGMATIC_AGENT_HIVE_ID', 'PRAGMATIC_AGENT_TOKEN', 'PRAGMATIC_AGENT_TOKEN_FILE']
+    public static readonly Undeclared: readonly string[] = [
+        'PRAGMATIC_AGENT_REGISTRY_URL', 'PRAGMATIC_AGENT_HIVE_ID', 'PRAGMATIC_AGENT_TOKEN', 'PRAGMATIC_AGENT_TOKEN_FILE',
+        // A connected agent's (the chart sets them, C3.3): its tenant, the release, the pinned trust root, where it runs,
+        // the console that alone may call it and the engine workloads it reports on.
+        'PRAGMATIC_AGENT_TENANT', 'PRAGMATIC_AGENT_ENGINE_VERSION', 'PRAGMATIC_AGENT_TRUST_ROOT_FILE', 'PRAGMATIC_AGENT_NAMESPACE',
+        'PRAGMATIC_AGENT_CONSOLE_SERVICE_ACCOUNT', 'PRAGMATIC_AGENT_CONSOLE_DEPLOYMENT', 'PRAGMATIC_AGENT_IDP_NAMESPACE', 'PRAGMATIC_AGENT_IDP_DEPLOYMENT',
+        'PRAGMATIC_AGENT_POSTGRES_STATEFULSET', 'PRAGMATIC_AGENT_INTERNAL_PORT',
+    ]
 }
 
 describe('HiveAgentComponent', () =>

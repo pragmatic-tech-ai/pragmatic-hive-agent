@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "component": "pragmatic-hive-agent",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "options": [
     {
       "name": "core",
@@ -31,6 +31,11 @@
     "postgres": false
   },
   "endpoints": {
-    "ports": []
+    "ports": [
+      {
+        "name": "internal",
+        "port": 7210
+      }
+    ]
   }
 }

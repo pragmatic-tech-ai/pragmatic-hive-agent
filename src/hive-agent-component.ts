@@ -1,17 +1,20 @@
+import { AgentInternalLink } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import { SettingType, type ComponentDescriptor, ComponentDeclarations, type ComponentDeclaration } from '@pragmatic-tech-ai/pragmatic-component'
 
 /**
  * The component descriptor of the hive agent image (pragmatic-agentd): what `AgentSettings` reads that a tenant may
- * configure. It polls the platform's agent channel and patches the hive's deployments; it listens on no port and stores
- * nothing. The channel, the hive and the agent's bearer token are the platform's (the hive manifests inject them): an
- * agent pointed elsewhere would hand its token and its cluster-wide patch on Deployments to whoever answers, so they are
- * left out of the descriptor and no tenant configuration can set them.
+ * configure. It polls the platform's agent channel and patches the hive's deployments, stores nothing, and (installed by
+ * the chart, level connected) serves the engine console's internal enrolment API on 7210. The channel, the hive, the
+ * agent's bearer token, the tenant, the pinned trust root and the console's account are the platform's (the chart and
+ * the hive manifests inject them): an agent pointed elsewhere would hand its token and its cluster-wide patch on
+ * Deployments to whoever answers, so they are left out of the descriptor and no tenant configuration can set them.
  */
 export class HiveAgentComponent
 {
     public static readonly Name = 'pragmatic-hive-agent'
     /** The descriptor version: this application's package version (the release test pins it to package.json). */
-    public static readonly Version = '0.1.8'
+    public static readonly Version = '0.1.9'
+    private static readonly InternalPortName = 'internal'
 
     /** The declaration: the descriptor, and the variable the start step overlays each configured setting onto. */
     public static readonly Declaration: ComponentDeclaration = {
@@ -29,7 +32,8 @@ export class HiveAgentComponent
         ],
         roles: [],
         postgres: false,
-        ports: [],
+        // The cluster-internal API the engine's console calls to enrol the hive (C3.3; AgentInternalLink.Port).
+        ports: [{ name: HiveAgentComponent.InternalPortName, number: AgentInternalLink.Port }],
     }
 
     public static Descriptor(): ComponentDescriptor

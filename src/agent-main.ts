@@ -8,6 +8,8 @@ import { RolloutAgent, type IEnvironmentState, type IRolloutTarget, type ISnapsh
 import { StructuredLogger, type ILogger } from '@pragmatic-tech-ai/pragmatic-observability'
 import { TickLoop, type ITickTarget } from './tick-loop.js'
 import { AgentEnrolment } from './agent-enrolment.js'
+import { ConnectedAgent } from './enrolment/connected-agent.js'
+import { ConnectedSettings } from './enrolment/connected-settings.js'
 
 /** The agent's ticks for its loop: a failed one is logged by its message only, never the token, headers or request bodies. */
 class AgentTicks implements ITickTarget
@@ -67,8 +69,14 @@ export class AgentMain
         // First of all: the applied configuration (the mounted pragmatic-config-pragmatic-hive-agent) over the environment.
         await ComponentStartConfiguration.ApplyOrExit({ Declaration: HiveAgentComponent.Declaration, Env: process.env })
         const logger = StructuredLogger.ToStdout()
-        // An engine installed by the chart (level connected) starts before the hive is enrolled: no token yet. It waits
-        // ready and idle, re-reading the token file each poll, and starts once enrolment writes it (C3.3).
+        // An engine installed by the chart (level connected) enrols itself by its own key and reports over the signed
+        // agent channel (C3.3); a hive installed by push holds an agent token and polls the v1 routes below.
+        if (ConnectedSettings.IsConnected(process.env) && !AgentEnrolment.IsEnrolled(process.env))
+        {
+            await ConnectedAgent.Run(process.env, logger, AgentWiring.Required(AgentSettings.HiveIdEnv))
+            return
+        }
+        // A push-installed hive whose token is not written yet waits ready and idle, re-reading the token file each poll.
         if (!AgentEnrolment.IsEnrolled(process.env))
         {
             logger.Info(AgentMain.NotEnrolledLine, { [AgentTicks.EventKey]: AgentMain.NotEnrolledEvent })

@@ -4,7 +4,7 @@ import { describe, it } from 'node:test'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** The hive agent stays dependency-light: node built-ins and three shared packages, no TODL, Mural or todl-runtime. */
+/** The hive agent stays dependency-light: node built-ins and five shared packages (the hive protocol among them, itself dependency-free), no TODL, Mural or todl-runtime. */
 class PackageDepsFixture
 {
     public static readonly Root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -14,7 +14,7 @@ class PackageDepsFixture
     public static readonly Utf8 = 'utf8'
     public static readonly Forbidden: readonly string[] = ['@pragmatic-tech-ai/todl', '@pragmatic-tech-ai/todl-runtime', '@pragmatic-tech-ai/mural']
     public static readonly Dependencies: readonly string[] = [
-        '@pragmatic-tech-ai/pragmatic-component', '@pragmatic-tech-ai/pragmatic-configuration-runtime', '@pragmatic-tech-ai/pragmatic-kube', '@pragmatic-tech-ai/pragmatic-observability',
+        '@pragmatic-tech-ai/pragmatic-component', '@pragmatic-tech-ai/pragmatic-configuration-runtime', '@pragmatic-tech-ai/pragmatic-hive-protocol', '@pragmatic-tech-ai/pragmatic-kube', '@pragmatic-tech-ai/pragmatic-observability',
     ]
     public static readonly DependencyFields: readonly string[] = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
 
@@ -76,7 +76,7 @@ describe('package dependencies', () =>
         }
     })
 
-    it('the runtime dependencies are exactly pragmatic-component, pragmatic-configuration-runtime, pragmatic-kube and pragmatic-observability', () =>
+    it('the runtime dependencies are exactly pragmatic-component, pragmatic-configuration-runtime, pragmatic-hive-protocol, pragmatic-kube and pragmatic-observability', () =>
     {
         assert.deepEqual(F.Declared(F.DependencyFields[0]).sort(), [...F.Dependencies].sort())
     })

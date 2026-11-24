@@ -58,6 +58,12 @@ export class AgentSettings
         return AgentSettings.PositiveInt(env, AgentSettings.PollIntervalEnv, AgentSettings.DefaultPollIntervalMs)
     }
 
+    /** The longest wait after failed ticks the environment sets (or the default). */
+    public static MaxBackoffMsOf(env: NodeJS.ProcessEnv): number
+    {
+        return AgentSettings.PositiveInt(env, AgentSettings.MaxBackoffEnv, AgentSettings.DefaultMaxBackoffMs)
+    }
+
     private static Required(env: NodeJS.ProcessEnv, key: string): string
     {
         return AgentSettings.Present(env[key], key)
