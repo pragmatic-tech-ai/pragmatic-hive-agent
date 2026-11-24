@@ -1,3 +1,5 @@
+import { RealmSecretsChoice } from './workload-identity-issuer-check.js'
+
 /** How the console is reached (chart value `console.address`). */
 export enum ConsoleAddress
 {
@@ -27,6 +29,7 @@ export class PreflightSettings
     public static readonly ConsoleAddressEnv = 'PRAGMATIC_PREFLIGHT_CONSOLE_ADDRESS'
     public static readonly TlsSecretEnv = 'PRAGMATIC_PREFLIGHT_TLS_SECRET'
     public static readonly TlsModeEnv = 'PRAGMATIC_PREFLIGHT_TLS_MODE'
+    public static readonly RealmSecretsOptionEnv = 'PRAGMATIC_PREFLIGHT_REALM_SECRETS_OPTION'
     private static readonly MissingPrefix = 'missing required environment variable '
     private static readonly BadValueInfix = ' has an unknown value: '
     private static readonly Empty = ''
@@ -45,6 +48,7 @@ export class PreflightSettings
         public readonly Address: ConsoleAddress,
         public readonly TlsSecret: string | undefined,
         public readonly Tls: TlsMode,
+        public readonly RealmSecrets: RealmSecretsChoice,
     )
     {
         Object.freeze(this)
@@ -83,6 +87,7 @@ export class PreflightSettings
             S.OneOf(env, S.ConsoleAddressEnv, Object.values(ConsoleAddress), ConsoleAddress.OwnDomain),
             S.Optional(env, S.TlsSecretEnv),
             S.OneOf(env, S.TlsModeEnv, Object.values(TlsMode), TlsMode.Secret),
+            S.OneOf(env, S.RealmSecretsOptionEnv, Object.values(RealmSecretsChoice), RealmSecretsChoice.Custom),
         )
     }
 

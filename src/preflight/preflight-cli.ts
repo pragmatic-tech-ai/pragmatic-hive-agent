@@ -8,6 +8,7 @@ import { PreflightOutcome, type IPreflightCheck, type PreflightResult } from './
 import { PreflightSettings } from './preflight-settings.js'
 import { StorageClassCheck } from './storage-class-check.js'
 import { TlsCheck } from './tls-check.js'
+import { WorkloadIdentityIssuerCheck, type IPublicFetch } from './workload-identity-issuer-check.js'
 
 /** Where the CLI writes its lines (stdout in the Job; a recorder in tests). */
 export interface IPreflightOutput
@@ -47,7 +48,7 @@ export class PreflightCli
     }
 
     /** The checks in the order they report. */
-    public static Checks(client: KubeApiClient, settings: PreflightSettings, resolver: IHostResolver = new NodeHostResolver()): IPreflightCheck[]
+    public static Checks(client: KubeApiClient, settings: PreflightSettings, resolver: IHostResolver = new NodeHostResolver(), fetcher?: IPublicFetch): IPreflightCheck[]
     {
         const checks: IPreflightCheck[] = [
             new ClusterVersionCheck(client),
@@ -55,6 +56,7 @@ export class PreflightCli
             new IngressClassCheck(client, settings.IngressClass, settings.Address),
             new DnsNameCheck(settings.Hosts, settings.Address, resolver),
             new TlsCheck(client, settings.Namespace, settings.Tls, settings.TlsSecret, settings.Hosts),
+            new WorkloadIdentityIssuerCheck(client, settings.RealmSecrets, fetcher),
         ]
         if (settings.TenantId !== undefined && settings.HiveId !== undefined)
         {
