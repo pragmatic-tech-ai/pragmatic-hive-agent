@@ -103,6 +103,7 @@ export class IntentPuller implements ITickTarget, IIntentDesk
     private static readonly DecidedEvent = 'intent-decided'
     private static readonly RefusedEvent = 'intent-store-full'
     private static readonly NotApprovedEvent = 'intent-not-approved'
+    private static readonly OtherDigestEvent = 'intent-refused-other-digest'
     private static readonly ApplyErrorEvent = 'intent-apply-error'
     private static readonly UnknownError = 'Error'
     private static readonly Base64Url = 'base64url'
@@ -212,6 +213,19 @@ export class IntentPuller implements ITickTarget, IIntentDesk
             const admitted: string[] = []
             for (const item of batch.Items)
             {
+                // After a restore the platform also answers open intents this hive keeps already, whatever their
+                // sequence: a kept id is skipped before verification would claim its nonce again (the same envelope
+                // resent), and a kept id under another digest is refused, the kept intent left as it is.
+                const keptId = IntentPuller.IntentIdOf(item.Body)
+                const kept = keptId === undefined ? undefined : o.Store.Get(keptId)
+                if (kept !== undefined)
+                {
+                    if (kept.Digest !== item.Digest)
+                    {
+                        o.Log.Event(IntentPuller.OtherDigestEvent)
+                    }
+                    continue
+                }
                 let intent: VerifiedMessage<Intent>
                 try
                 {
@@ -255,13 +269,10 @@ export class IntentPuller implements ITickTarget, IIntentDesk
     private Admit(intent: VerifiedMessage<Intent>, batch: number): boolean
     {
         const store = this.options.Store
-        const kept = store.Get(intent.Body.IntentId)
-        if (kept !== undefined && kept.Digest === intent.Digest)
+        if (store.Get(intent.Body.IntentId) !== undefined)
         {
             return false
         }
-        // A different digest under a kept id is a new intent: it replaces the kept one with its own status, so an approval
-        // given to the old one (bound to its digest) can never apply it.
         const fresh = new KeptIntent(intent.Envelope, intent.Body, IntentStatus.Of(intent.Body.IntentId, IntentProgress.AwaitingApproval), null, null, batch)
         const mode = this.ModeOf(intent.Body)
         store.Put(mode === undefined ? fresh.Failed(IntentFailure.PrecheckRefused) : fresh.With(mode === IntentApplyMode.ApplyDirectly ? IntentProgress.Applying : IntentProgress.AwaitingApproval))
@@ -455,6 +466,19 @@ export class IntentPuller implements ITickTarget, IIntentDesk
         await o.Store.Save()
         o.Log.Event(IntentPuller.DecidedEvent, call.Decision)
         return decided.View()
+    }
+
+    /** The intent id an item's body names (unverified: only to recognise a kept one), or undefined. */
+    private static IntentIdOf(body: Readonly<Record<string, unknown>>): string | undefined
+    {
+        try
+        {
+            return Intent.Parse(body).IntentId
+        }
+        catch
+        {
+            return undefined
+        }
     }
 
     private static IsHiveKeyRotation(kept: KeptIntent): boolean

@@ -18,14 +18,14 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json"
   },
   "dependencies": {
-    "@pragmatic-tech-ai/pragmatic-component": "^0.22.0",
-    "@pragmatic-tech-ai/pragmatic-configuration-runtime": "^0.22.0",
-    "@pragmatic-tech-ai/pragmatic-hive-protocol": "^0.22.0",
-    "@pragmatic-tech-ai/pragmatic-kube": "^0.22.0",
-    "@pragmatic-tech-ai/pragmatic-observability": "^0.22.0"
+    "@pragmatic-tech-ai/pragmatic-component": "^0.22.2",
+    "@pragmatic-tech-ai/pragmatic-configuration-runtime": "^0.22.2",
+    "@pragmatic-tech-ai/pragmatic-hive-protocol": "^0.22.2",
+    "@pragmatic-tech-ai/pragmatic-kube": "^0.22.2",
+    "@pragmatic-tech-ai/pragmatic-observability": "^0.22.2"
   },
   "devDependencies": {
-    "@pragmatic-tech-ai/pragmatic-release-toolkit": "^0.22.0",
+    "@pragmatic-tech-ai/pragmatic-release-toolkit": "^0.22.2",
     "@types/node": "^22.20.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.0"

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-    EnvelopeSigner, HiveLevel, HiveReport, IntentChoice, IntentDecision, IntentDecisionCall, IntentDecisionKind, IntentDecisionRefusal, IntentFailure, IntentProgress, IntentStatus,
+    EnvelopeSigner, HiveLevel, HiveReport, Intent, IntentChoice, IntentDecision, IntentDecisionCall, IntentDecisionKind, IntentDecisionRefusal, IntentFailure, IntentProgress, IntentStatus,
     MessageKind, Participant, PullBatch, RealmSubject,
 } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import { FakePlatform } from '@pragmatic-tech-ai/pragmatic-hive-protocol/testing'
@@ -101,13 +101,38 @@ describe('IntentPuller', () =>
         const second = world.Publish(IntentWorld.CreateEnvironment('prod'), undefined, undefined, 'intent-x')
         await world.Puller.Tick()
         assert.notEqual(first, second)
-        assert.equal(world.Store.Get('intent-x')?.Digest, second)
-        assert.equal(await Decisions.CodeOf(world.Puller.Decide('intent-x', Decisions.Approve(first))), IntentDecisionRefusal.DigestMismatch)
+        assert.equal(world.Store.Get('intent-x')?.Digest, first, 'the other digest is refused, the kept intent stays')
+        assert.equal(await Decisions.CodeOf(world.Puller.Decide('intent-x', Decisions.Approve(second))), IntentDecisionRefusal.DigestMismatch)
         assert.deepEqual(world.Recorded.Applied, [])
         assert.equal(world.Platform.ReceivedOf(MessageKind.IntentDecision).length, 0)
-        await world.Puller.Decide('intent-x', Decisions.Approve(second))
+        // The kept intent is still decidable by its own digest (here the fake platform knows only the reissue, so it
+        // does not take the decision: unavailable, and nothing applies).
+        assert.equal(await Decisions.CodeOf(world.Puller.Decide('intent-x', Decisions.Approve(first))), IntentDecisionRefusal.Unavailable)
         await Decisions.Settle(world)
-        assert.deepEqual(world.Recorded.Applied, ['intent-x'])
+        assert.deepEqual(world.Recorded.Applied, [])
+        assert.equal(world.Progress('intent-x'), IntentProgress.AwaitingApproval)
+    })
+
+    it('after a platform restore a kept intent served again is skipped before verification, the batch goes on', async () =>
+    {
+        const world = await IntentWorld.Enrolled(HiveLevel.Delegated)
+        world.Publish(IntentWorld.CreateEnvironment('one'))
+        await world.Puller.Tick()
+        const kept = world.Store.Get('intent-2')!
+        const other = world.Platform.PublishIntent(world.HiveId, IntentWorld.CreateEnvironment('other'), { IntentId: 'intent-2', Level: HiveLevel.Delegated })
+        const fresh = world.Platform.PublishIntent(world.HiveId, IntentWorld.CreateEnvironment('fresh'), { Level: HiveLevel.Delegated })
+        const signer = new EnvelopeSigner(world.Platform.SigningKey, Participant.Platform, world.Clock)
+        // The restored platform answers the kept envelope again (same nonce), one under the kept id with another digest, and a new one.
+        world.Channel.Exchange = async request => request.Kind === MessageKind.Pull
+            ? signer.Sign(MessageKind.PullBatch, Participant.Hive(world.HiveId), PullBatch.Create([kept.Envelope, other, fresh], 9))
+            : null
+        await world.Puller.Tick()
+        assert.equal(world.Store.Get('intent-2')?.Digest, kept.Digest)
+        assert.equal(world.Store.Get('intent-2')?.Progress, IntentProgress.Applied)
+        assert.equal(world.Store.Get(Intent.Parse(fresh.Body).IntentId)?.Progress, IntentProgress.Applied)
+        assert.deepEqual(world.Recorded.Applied, ['intent-2', Intent.Parse(fresh.Body).IntentId])
+        assert.ok(world.Events.some(event => event.startsWith('intent-refused-other-digest')))
+        assert.equal(world.Store.Cursor, 9)
     })
 
     it('an expired intent cannot be approved; it shows expired', async () =>
