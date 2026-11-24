@@ -4,7 +4,7 @@ import { PreflightResults, type IPreflightCheck, type PreflightResult } from './
 export class Preflight
 {
     private static readonly ErrorPrefix = 'the check itself failed: '
-    private static readonly RetryFix = 'Re-run the install; if it fails again, read the preflight Job log (kubectl logs -n <namespace> job/pragmatic-engine-preflight).'
+    private static readonly RetryFix = 'Run helm uninstall pragmatic-engine -n pragmatic-system, then install again; if it fails again, read the preflight Job log (kubectl logs -n pragmatic-system job/pragmatic-engine-preflight).'
 
     public constructor(private readonly checks: readonly IPreflightCheck[])
     {

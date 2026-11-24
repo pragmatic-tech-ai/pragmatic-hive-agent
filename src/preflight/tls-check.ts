@@ -30,7 +30,7 @@ export class TlsCheck implements IPreflightCheck
     private static readonly OkSuffix = ' holds a current certificate for '
     private static readonly Separator = ', '
     private static readonly CreateFix = 'Create the Secret (kubectl create secret tls <name> --cert=<file> --key=<file> -n <namespace>) or install with --set tls.mode=self-signed.'
-    private static readonly RenewFix = 'Put a current certificate naming every published host (the console and the realm sign-in service) in the Secret, then install again.'
+    private static readonly RenewFix = 'Put a current certificate naming every published host (the console, the realm sign-in service and *.<baseDomain> for the environments) in the Secret, then install again.'
 
     public readonly Name = TlsCheck.CheckName
 

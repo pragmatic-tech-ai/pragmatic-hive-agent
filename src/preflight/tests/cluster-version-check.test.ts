@@ -14,20 +14,20 @@ class VersionFixture
 
 describe('ClusterVersionCheck', () =>
 {
-    it('passes 1.29, 1.31 and a managed 1.30+', async () =>
+    it('passes 1.30, 1.31 and a managed 1.30+', async () =>
     {
-        assert.equal((await VersionFixture.Outcome('1', '29')).Outcome, PreflightOutcome.Pass)
+        assert.equal((await VersionFixture.Outcome('1', '30')).Outcome, PreflightOutcome.Pass)
         assert.equal((await VersionFixture.Outcome('1', '31')).Outcome, PreflightOutcome.Pass)
         const managed = await VersionFixture.Outcome('1', '30+')
         assert.equal(managed.Outcome, PreflightOutcome.Pass)
         assert.match(managed.Message, /Kubernetes 1\.30/)
     })
 
-    it('fails 1.28 with the upgrade fix', async () =>
+    it('fails 1.29 (no v1 ValidatingAdmissionPolicy) with the upgrade fix', async () =>
     {
-        const result = await VersionFixture.Outcome('1', '28')
+        const result = await VersionFixture.Outcome('1', '29')
         assert.equal(result.Outcome, PreflightOutcome.Fail)
-        assert.match(result.Message, /1\.28; the engine needs 1\.29 or later/)
+        assert.match(result.Message, /1\.29; the engine needs 1\.30 or later/)
         assert.match(result.Fix, /Upgrade the cluster/)
     })
 

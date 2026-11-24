@@ -32,13 +32,14 @@ export class NodeHostResolver implements IHostResolver
 export class DnsNameCheck implements IPreflightCheck
 {
     public static readonly CheckName = 'dns-name'
-    private static readonly ResolvesSuffix = ' resolves'
+    private static readonly ResolvesSuffix = ' resolve'
+    private static readonly ResolvesOneSuffix = ' resolves'
     private static readonly AndWord = ' and '
     private static readonly UnresolvedPrefix = 'does not resolve: '
     private static readonly Separator = ', '
     private static readonly PublishedAtEnrolment = 'the hive subdomain is published at enrolment; until then nothing resolves it'
     private static readonly EnrolFix = 'Enrol the hive (the platform publishes its subdomain), or install with --set console.address=own-domain and a host you own.'
-    private static readonly RecordFix = 'Create DNS records (A or CNAME) for these names pointing at the ingress controller\'s external address, then install again.'
+    private static readonly RecordFix = 'Create DNS records (A or CNAME) for the console, the sign-in service and a wildcard for the environments (*.<baseDomain>), pointing at the ingress controller\'s external address, then install again.'
 
     public readonly Name = DnsNameCheck.CheckName
 
@@ -62,7 +63,7 @@ export class DnsNameCheck implements IPreflightCheck
             }
         }
         return unresolved.length === 0
-            ? PreflightResults.Pass(D.CheckName, this.hosts.join(D.AndWord) + D.ResolvesSuffix)
+            ? PreflightResults.Pass(D.CheckName, this.hosts.join(D.AndWord) + (this.hosts.length === 1 ? D.ResolvesOneSuffix : D.ResolvesSuffix))
             : PreflightResults.Fail(D.CheckName, D.UnresolvedPrefix + unresolved.join(D.Separator), D.RecordFix)
     }
 }

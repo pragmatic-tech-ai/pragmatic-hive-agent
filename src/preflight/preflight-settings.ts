@@ -21,12 +21,15 @@ export class PreflightSettings
     public static readonly IngressClassEnv = 'PRAGMATIC_PREFLIGHT_INGRESS_CLASS'
     public static readonly ConsoleHostEnv = 'PRAGMATIC_PREFLIGHT_CONSOLE_HOST'
     public static readonly IdpHostEnv = 'PRAGMATIC_PREFLIGHT_IDP_HOST'
+    public static readonly BaseDomainEnv = 'PRAGMATIC_PREFLIGHT_BASE_DOMAIN'
     public static readonly ConsoleAddressEnv = 'PRAGMATIC_PREFLIGHT_CONSOLE_ADDRESS'
     public static readonly TlsSecretEnv = 'PRAGMATIC_PREFLIGHT_TLS_SECRET'
     public static readonly TlsModeEnv = 'PRAGMATIC_PREFLIGHT_TLS_MODE'
     private static readonly MissingPrefix = 'missing required environment variable '
     private static readonly BadValueInfix = ' has an unknown value: '
     private static readonly Empty = ''
+    /** A name under the base domain no environment takes: what an environment host resolves and is certified like. */
+    private static readonly ProbeLabel = 'pragmatic-preflight-probe.'
 
     private constructor(
         public readonly Namespace: string,
@@ -34,6 +37,7 @@ export class PreflightSettings
         public readonly IngressClass: string | undefined,
         public readonly ConsoleHost: string,
         public readonly IdpHost: string | undefined,
+        public readonly BaseDomain: string | undefined,
         public readonly Address: ConsoleAddress,
         public readonly TlsSecret: string | undefined,
         public readonly Tls: TlsMode,
@@ -42,10 +46,22 @@ export class PreflightSettings
         Object.freeze(this)
     }
 
-    /** The hosts the console publishes: its own, and the realm sign-in service's when it has one. */
+    /**
+     * The hosts the engine publishes: the console's, the realm sign-in service's, and a probe name under the base domain
+     * standing for every environment's host (`<environment>.<baseDomain>`), each when known.
+     */
     public get Hosts(): readonly string[]
     {
-        return this.IdpHost === undefined ? [this.ConsoleHost] : [this.ConsoleHost, this.IdpHost]
+        const hosts = [this.ConsoleHost]
+        if (this.IdpHost !== undefined)
+        {
+            hosts.push(this.IdpHost)
+        }
+        if (this.BaseDomain !== undefined)
+        {
+            hosts.push(PreflightSettings.ProbeLabel + this.BaseDomain)
+        }
+        return hosts
     }
 
     public static From(env: NodeJS.ProcessEnv): PreflightSettings
@@ -57,6 +73,7 @@ export class PreflightSettings
             S.Optional(env, S.IngressClassEnv),
             S.Required(env, S.ConsoleHostEnv),
             S.Optional(env, S.IdpHostEnv),
+            S.Optional(env, S.BaseDomainEnv),
             S.OneOf(env, S.ConsoleAddressEnv, Object.values(ConsoleAddress), ConsoleAddress.OwnDomain),
             S.Optional(env, S.TlsSecretEnv),
             S.OneOf(env, S.TlsModeEnv, Object.values(TlsMode), TlsMode.Secret),

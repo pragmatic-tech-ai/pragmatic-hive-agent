@@ -3,20 +3,20 @@ import { PreflightResults, type IPreflightCheck, type PreflightResult } from './
 
 type VersionInfo = { major?: unknown; minor?: unknown }
 
-/** The API server reports Kubernetes 1.29 or later (`GET /version`). */
+/** The API server reports Kubernetes 1.30 or later (`GET /version`): the engine's admission fence is a v1 ValidatingAdmissionPolicy. */
 export class ClusterVersionCheck implements IPreflightCheck
 {
     public static readonly CheckName = 'cluster-version'
     public static readonly MinimumMajor = 1
-    public static readonly MinimumMinor = 29
+    public static readonly MinimumMinor = 30
     private static readonly VersionPath = '/version'
     private static readonly Digits = /^(\d+)/
     private static readonly Dot = '.'
     private static readonly PassPrefix = 'Kubernetes '
     private static readonly TooOldPrefix = 'the cluster runs Kubernetes '
-    private static readonly TooOldSuffix = '; the engine needs 1.29 or later'
+    private static readonly TooOldSuffix = '; the engine needs 1.30 or later'
     private static readonly Unreadable = 'the API server did not report its version'
-    private static readonly UpgradeFix = 'Upgrade the cluster to Kubernetes 1.29 or later, then install again.'
+    private static readonly UpgradeFix = 'Upgrade the cluster to Kubernetes 1.30 or later, then install again.'
 
     public readonly Name = ClusterVersionCheck.CheckName
 
@@ -42,7 +42,7 @@ export class ClusterVersionCheck implements IPreflightCheck
         return PreflightResults.Pass(C.CheckName, C.PassPrefix + version)
     }
 
-    /** `"29"` and managed clusters' `"29+"` both read 29. */
+    /** `"30"` and managed clusters' `"30+"` both read 30. */
     private static NumberOf(raw: unknown): number | undefined
     {
         if (typeof raw !== 'string')

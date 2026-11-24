@@ -48,7 +48,7 @@ class PreflightFixture
 {
     public static readonly Here = dirname(fileURLToPath(import.meta.url))
     public static readonly CertPem = readFileSync(join(PreflightFixture.Here, 'fixtures', 'console.crt.pem'))
-    public static readonly Hosts = ['console.example.com', 'idp-console.example.com']
+    public static readonly Hosts = ['console.example.com', 'idp-console.example.com', 'pragmatic-preflight-probe.example.com']
 
     public static Env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv
     {
@@ -56,6 +56,7 @@ class PreflightFixture
             PRAGMATIC_PREFLIGHT_NAMESPACE: 'pragmatic-system',
             PRAGMATIC_PREFLIGHT_CONSOLE_HOST: 'console.example.com',
             PRAGMATIC_PREFLIGHT_IDP_HOST: 'idp-console.example.com',
+            PRAGMATIC_PREFLIGHT_BASE_DOMAIN: 'example.com',
             PRAGMATIC_PREFLIGHT_CONSOLE_ADDRESS: 'own-domain',
             PRAGMATIC_PREFLIGHT_TLS_MODE: 'secret',
             PRAGMATIC_PREFLIGHT_TLS_SECRET: 'console-tls',
@@ -142,6 +143,8 @@ describe('PreflightSettings', () =>
         assert.equal(settings.Address, ConsoleAddress.OwnDomain)
         assert.equal(settings.Tls, TlsMode.Secret)
         assert.deepEqual(settings.Hosts, ['c.example.com'])
+        const full = PreflightSettings.From({ PRAGMATIC_PREFLIGHT_NAMESPACE: 'ns', PRAGMATIC_PREFLIGHT_CONSOLE_HOST: 'c.example.com', PRAGMATIC_PREFLIGHT_IDP_HOST: 'idp-t.example.com', PRAGMATIC_PREFLIGHT_BASE_DOMAIN: 'example.com' })
+        assert.deepEqual(full.Hosts, ['c.example.com', 'idp-t.example.com', 'pragmatic-preflight-probe.example.com'], 'environments stand for themselves by a probe name')
         assert.throws(() => PreflightSettings.From({ PRAGMATIC_PREFLIGHT_NAMESPACE: 'ns' }), /PRAGMATIC_PREFLIGHT_CONSOLE_HOST/)
     })
 })
