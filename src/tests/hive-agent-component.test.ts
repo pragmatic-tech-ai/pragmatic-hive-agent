@@ -10,7 +10,7 @@ class HiveAgentComponentFixture
 {
     public static readonly Here = dirname(fileURLToPath(import.meta.url))
     public static readonly Golden = join(HiveAgentComponentFixture.Here, 'fixtures', 'pragmatic-hive-agent.component.json')
-    public static readonly Digest = 'sha256:6b6b49282e7a5a620a066eb2953244d9bbec7591a1bd04b24f132df94eaaccdd'
+    public static readonly Digest = 'sha256:b13c2181a840d51b08ad9b147fc94cd20b1c614668e8ebc568ec5c984fbd5670'
     public static readonly Readers = [['..', 'agent-main.ts'], ['..', 'agent-settings.ts']].map(path => join(HiveAgentComponentFixture.Here, ...path))
     /** Platform-owned: injected by the hive manifests, never tenant-configurable (the descriptor leaves them out). */
     public static readonly Undeclared: readonly string[] = ['PRAGMATIC_AGENT_REGISTRY_URL', 'PRAGMATIC_AGENT_HIVE_ID', 'PRAGMATIC_AGENT_TOKEN', 'PRAGMATIC_AGENT_TOKEN_FILE']

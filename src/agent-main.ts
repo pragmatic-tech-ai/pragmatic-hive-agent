@@ -6,10 +6,36 @@ import { AgentWiring } from './agent-wiring.js'
 import { BoundedFetch } from './bounded-fetch.js'
 import { RolloutAgent, type IEnvironmentState, type IRolloutTarget, type ISnapshotEnvironment } from './rollout-agent.js'
 import { StructuredLogger, type ILogger } from '@pragmatic-tech-ai/pragmatic-observability'
+import { TickLoop, type ITickTarget } from './tick-loop.js'
+
+/** The agent's ticks for its loop: a failed one is logged by its message only, never the token, headers or request bodies. */
+class AgentTicks implements ITickTarget
+{
+    private static readonly TickFailedPrefix = 'rollout tick failed: '
+    public static readonly UnknownError = 'unknown error'
+    public static readonly EventKey = 'event'
+    private static readonly TickFailedEvent = 'tick-failed'
+    public static readonly HiveKey = 'hiveId'
+    private static readonly BackoffKey = 'backoffMs'
+
+    public constructor(private readonly agent: RolloutAgent, private readonly logger: ILogger, private readonly hiveId: string)
+    {
+    }
+
+    public Tick(): Promise<void>
+    {
+        return this.agent.Tick()
+    }
+
+    public TickFailed(error: unknown, backoffMs: number): void
+    {
+        const T = AgentTicks
+        this.logger.Error(T.TickFailedPrefix + (error instanceof Error ? error.message : T.UnknownError), { [T.EventKey]: T.TickFailedEvent, [T.HiveKey]: this.hiveId, [T.BackoffKey]: backoffMs })
+    }
+}
 
 class AgentMain
 {
-    private static readonly BackoffFactor = 2
     private static readonly RequestTimeoutMs = 10000
 
     private static readonly AuthorizationHeader = 'Authorization'
@@ -20,17 +46,11 @@ class AgentMain
     private static readonly NotFound = 404
 
     private static readonly RegistryFailurePrefix = 'registry request failed with status '
-    private static readonly TickFailedPrefix = 'rollout tick failed: '
     private static readonly StartFailedPrefix = 'pragmatic-agentd failed to start: '
     private static readonly StartedLine = 'pragmatic-agentd started'
-    private static readonly UnknownError = 'unknown error'
     private static readonly EnvironmentsKey = 'environments'
-    private static readonly EventKey = 'event'
-    private static readonly TickFailedEvent = 'tick-failed'
     private static readonly StartupEvent = 'startup'
     private static readonly StartFailedEvent = 'start-failed'
-    private static readonly HiveKey = 'hiveId'
-    private static readonly BackoffKey = 'backoffMs'
 
     private constructor()
     {
@@ -42,7 +62,7 @@ class AgentMain
         await ComponentStartConfiguration.ApplyOrExit({ Declaration: HiveAgentComponent.Declaration, Env: process.env })
         const logger = StructuredLogger.ToStdout()
         const settings = AgentSettings.Started(process.env)
-        const { RegistryUrl: registryUrl, HiveId: hiveId, Token: token, PollMs: pollMs, MaxBackoffMs: maxBackoffMs } = settings
+        const { RegistryUrl: registryUrl, HiveId: hiveId, Token: token } = settings
 
         const k8s = new InClusterK8sApi()
         const selector = AgentWiring.LabelSelector(hiveId)
@@ -54,34 +74,14 @@ class AgentMain
             patchImage: (namespace, deployment, container, image) => k8s.PatchDeploymentImage(namespace, deployment, container, image),
             reportSnapshot: environments => AgentMain.ReportSnapshot(snapshotUrl, token, environments),
         })
-        logger.Info(AgentMain.StartedLine, { [AgentMain.EventKey]: AgentMain.StartupEvent, [AgentMain.HiveKey]: hiveId })
-        void AgentMain.Loop(agent, logger, hiveId, pollMs, maxBackoffMs)
+        logger.Info(AgentMain.StartedLine, { [AgentTicks.EventKey]: AgentMain.StartupEvent, [AgentTicks.HiveKey]: hiveId })
+        void TickLoop.For(settings, new AgentTicks(agent, logger, hiveId)).Run()
     }
 
     public static Fail(error: unknown): void
     {
-        StructuredLogger.ToStdout().Error(AgentMain.StartFailedPrefix + (error instanceof Error ? error.message : AgentMain.UnknownError), { [AgentMain.EventKey]: AgentMain.StartFailedEvent })
+        StructuredLogger.ToStdout().Error(AgentMain.StartFailedPrefix + (error instanceof Error ? error.message : AgentTicks.UnknownError), { [AgentTicks.EventKey]: AgentMain.StartFailedEvent })
         process.exit(1)
-    }
-
-    private static async Loop(agent: RolloutAgent, logger: ILogger, hiveId: string, pollMs: number, maxBackoffMs: number): Promise<void>
-    {
-        let delay = pollMs
-        for (;;)
-        {
-            try
-            {
-                await agent.Tick()
-                delay = pollMs
-            }
-            catch (error)
-            {
-                // message only: never the token, headers or request bodies
-                delay = Math.min(delay * AgentMain.BackoffFactor, maxBackoffMs)
-                logger.Error(AgentMain.TickFailedPrefix + (error instanceof Error ? error.message : AgentMain.UnknownError), { [AgentMain.EventKey]: AgentMain.TickFailedEvent, [AgentMain.HiveKey]: hiveId, [AgentMain.BackoffKey]: delay })
-            }
-            await new Promise<void>(resolve => setTimeout(resolve, delay))
-        }
     }
 
     private static async FetchTarget(url: string, token: string): Promise<IRolloutTarget | undefined>

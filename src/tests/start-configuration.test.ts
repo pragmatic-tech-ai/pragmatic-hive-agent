@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs'
 import { AppliedConfiguration, AppliedConfigurationEntries, ComponentReadyFile, ComponentStartConfiguration, type IStartProcess } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
 import { AgentSettings } from '../agent-settings.js'
 import { HiveAgentComponent } from '../hive-agent-component.js'
+import { TickLoop, type ITickDelay, type ITickTarget } from '../tick-loop.js'
 
 class AgentStart
 {
@@ -154,5 +155,71 @@ describe('the agent after a release changed its descriptor (I1) and its readines
             AgentSettings.Started(AgentStart.Env('/none'), new ComponentReadyFile(ready))
             assert.equal(existsSync(ready), true)
         })
+    })
+})
+
+/** Records the loop's waits instead of sleeping. */
+class RecordedWaits implements ITickDelay
+{
+    public readonly Waits: number[] = []
+
+    public Wait(ms: number): Promise<void>
+    {
+        this.Waits.push(ms)
+        return Promise.resolve()
+    }
+}
+
+/** Ticks that succeed or fail in a given order (true: succeeds), recording the backoff of each failure. */
+class ScriptedTicks implements ITickTarget
+{
+    public Ticks = 0
+    public readonly Backoffs: number[] = []
+
+    public constructor(private readonly outcomes: boolean[] = [])
+    {
+    }
+
+    public async Tick(): Promise<void>
+    {
+        this.Ticks++
+        if (this.outcomes.shift() === false)
+        {
+            throw new Error('channel down')
+        }
+    }
+
+    public TickFailed(_error: unknown, backoffMs: number): void
+    {
+        this.Backoffs.push(backoffMs)
+    }
+}
+
+describe('the check-in cadence comes from the configuration (C3.1 row 7)', () =>
+{
+    it('a configured pollIntervalMs of 15000 is the wait after every tick of the loop the agent builds from its settings', async () =>
+    {
+        await AgentStart.InFolder(async folder =>
+        {
+            const env = AgentStart.Env(await AgentStart.Configuration(folder, { pollIntervalMs: 15000, maxBackoffMs: 60000 }))
+            await ComponentStartConfiguration.Apply({ Declaration: HiveAgentComponent.Declaration, Env: env, Stores: ComponentStartConfiguration.Stores('', folder), SecretsDir: join(folder, 'run') })
+            const ready = new ComponentReadyFile(join(folder, 'ready'))
+            const settings = AgentSettings.Started(env, ready)
+            const waits = new RecordedWaits()
+            const ticks = new ScriptedTicks()
+            await TickLoop.For(settings, ticks, waits).Run(4)
+            assert.equal(ticks.Ticks, 4)
+            assert.deepEqual(waits.Waits, [15000, 15000, 15000, 15000])
+            assert.deepEqual(ticks.Backoffs, [])
+        })
+    })
+
+    it('a failed tick doubles the wait up to maxBackoffMs, and the next good tick is back on the configured cadence', async () =>
+    {
+        const waits = new RecordedWaits()
+        const ticks = new ScriptedTicks([false, false, false, true, false])
+        await TickLoop.For({ PollMs: 15000, MaxBackoffMs: 50000 }, ticks, waits).Run(5)
+        assert.deepEqual(waits.Waits, [30000, 50000, 50000, 15000, 30000])
+        assert.deepEqual(ticks.Backoffs, [30000, 50000, 50000, 30000])
     })
 })
