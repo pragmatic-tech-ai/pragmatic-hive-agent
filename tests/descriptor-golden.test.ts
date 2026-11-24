@@ -14,7 +14,7 @@ class DescriptorGoldenFixture
     public static readonly App = ReleaseApp.HiveAgent
     public static readonly Golden = join(DescriptorGoldenFixture.Here, '..', 'src', 'tests', 'fixtures', 'pragmatic-hive-agent.component.json')
     /** The same pin as src/tests/hive-agent-component.test.ts. */
-    public static readonly PinnedDigest = 'sha256:94b0602d53e381f998add433ccd190e23a4bedec912eef916d719c9feacd1909'
+    public static readonly PinnedDigest = 'sha256:6b6b49282e7a5a620a066eb2953244d9bbec7591a1bd04b24f132df94eaaccdd'
     public static readonly PackageJson = join(DescriptorGoldenFixture.Here, '..', 'package.json')
     public static readonly Utf8 = 'utf8'
 

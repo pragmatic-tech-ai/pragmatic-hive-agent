@@ -1,4 +1,4 @@
-import { SecretVariable } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
+import { ComponentReadyFile, SecretVariable } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
 
 /**
  * What the agent runs on, read from its environment after the start step laid its applied configuration over it
@@ -27,6 +27,17 @@ export class AgentSettings
     )
     {
         Object.freeze(this)
+    }
+
+    /**
+     * The settings, read after the start step; once they read, the agent marks itself ready (the file its readiness probe
+     * tests for), so a configuration that stops it starting never counts as a finished surge roll.
+     */
+    public static Started(env: NodeJS.ProcessEnv, ready: ComponentReadyFile = new ComponentReadyFile()): AgentSettings
+    {
+        const settings = AgentSettings.From(env)
+        ready.Mark()
+        return settings
     }
 
     public static From(env: NodeJS.ProcessEnv): AgentSettings

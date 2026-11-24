@@ -4,7 +4,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SettingType } from '@pragmatic-tech-ai/pragmatic-component'
-import { AppliedConfiguration, ComponentStartConfiguration, type IStartProcess } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
+import { existsSync } from 'node:fs'
+import { AppliedConfiguration, AppliedConfigurationEntries, ComponentReadyFile, ComponentStartConfiguration, type IStartProcess } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
 import { AgentSettings } from '../agent-settings.js'
 import { HiveAgentComponent } from '../hive-agent-component.js'
 
@@ -106,5 +107,52 @@ describe('the agent reads its configuration at start', () =>
     {
         const lists = HiveAgentComponent.Descriptor().Options.flatMap(o => o.Settings).filter(s => s.Type === SettingType.List)
         assert.deepEqual(lists, [], 'the agent declares no list setting')
+    })
+})
+
+describe('the agent after a release changed its descriptor (I1) and its readiness (I5)', () =>
+{
+    it('reads the entry prepared for its own descriptor beside a configuration applied for the previous one', async () =>
+    {
+        await AgentStart.InFolder(async folder =>
+        {
+            const own = HiveAgentComponent.Descriptor()
+            const old = new AppliedConfiguration('acme', own.Name, 1, '0.1.1', `sha256:${'1'.repeat(64)}`, { options: { core: { pollIntervalMs: 20000 } } } as never)
+            const entry = new AppliedConfiguration('acme', own.Name, 2, own.Version, own.ContentDigest(), { options: { core: { pollIntervalMs: 15000 } } } as never)
+            const path = join(folder, 'configuration.json')
+            await writeFile(path, old.ToCanonicalJson())
+            await writeFile(join(folder, AppliedConfigurationEntries.KeyOf(entry.DescriptorDigest)), entry.ToCanonicalJson())
+            const env = AgentStart.Env(path)
+            const process = new ExitRecorder()
+            const report = await ComponentStartConfiguration.ApplyOrExit({ Declaration: HiveAgentComponent.Declaration, Env: env }, process)
+            assert.equal(process.Code, undefined)
+            assert.equal(report.Applied, true)
+            assert.equal(AgentSettings.From(env).PollMs, 15000, 'the prepared entry, not the file of the old descriptor')
+        })
+    })
+
+    it('without an entry for its descriptor, a configuration applied for another one refuses the start (78)', async () =>
+    {
+        await AgentStart.InFolder(async folder =>
+        {
+            const own = HiveAgentComponent.Descriptor()
+            const path = join(folder, 'configuration.json')
+            await writeFile(path, new AppliedConfiguration('acme', own.Name, 1, '0.1.1', `sha256:${'1'.repeat(64)}`, { options: { core: { pollIntervalMs: 20000 } } } as never).ToCanonicalJson())
+            const process = new ExitRecorder()
+            await assert.rejects(ComponentStartConfiguration.ApplyOrExit({ Declaration: HiveAgentComponent.Declaration, Env: AgentStart.Env(path) }, process))
+            assert.equal(process.Code, 78)
+        })
+    })
+
+    it('marks itself ready only once its settings read', async () =>
+    {
+        await AgentStart.InFolder(async folder =>
+        {
+            const ready = join(folder, 'ready')
+            assert.throws(() => AgentSettings.Started({}, new ComponentReadyFile(ready)), /PRAGMATIC_AGENT_REGISTRY_URL/)
+            assert.equal(existsSync(ready), false, 'a start that fails is never ready')
+            AgentSettings.Started(AgentStart.Env('/none'), new ComponentReadyFile(ready))
+            assert.equal(existsSync(ready), true)
+        })
     })
 })

@@ -41,7 +41,7 @@ class AgentMain
         // First of all: the applied configuration (the mounted pragmatic-config-pragmatic-hive-agent) over the environment.
         await ComponentStartConfiguration.ApplyOrExit({ Declaration: HiveAgentComponent.Declaration, Env: process.env })
         const logger = StructuredLogger.ToStdout()
-        const settings = AgentSettings.From(process.env)
+        const settings = AgentSettings.Started(process.env)
         const { RegistryUrl: registryUrl, HiveId: hiveId, Token: token, PollMs: pollMs, MaxBackoffMs: maxBackoffMs } = settings
 
         const k8s = new InClusterK8sApi()
