@@ -7,6 +7,7 @@ import { BoundedFetch } from './bounded-fetch.js'
 import { RolloutAgent, type IEnvironmentState, type IRolloutTarget, type ISnapshotEnvironment } from './rollout-agent.js'
 import { StructuredLogger, type ILogger } from '@pragmatic-tech-ai/pragmatic-observability'
 import { TickLoop, type ITickTarget } from './tick-loop.js'
+import { AgentEnrolment } from './agent-enrolment.js'
 
 /** The agent's ticks for its loop: a failed one is logged by its message only, never the token, headers or request bodies. */
 class AgentTicks implements ITickTarget
@@ -34,7 +35,8 @@ class AgentTicks implements ITickTarget
     }
 }
 
-class AgentMain
+/** The rollout loop (the default command): idle until the hive is enrolled, then poll and roll. */
+export class AgentMain
 {
     private static readonly RequestTimeoutMs = 10000
 
@@ -51,6 +53,10 @@ class AgentMain
     private static readonly EnvironmentsKey = 'environments'
     private static readonly StartupEvent = 'startup'
     private static readonly StartFailedEvent = 'start-failed'
+    private static readonly NotEnrolledLine = 'pragmatic-agentd is not enrolled: idle until the hive is enrolled'
+    private static readonly NotEnrolledEvent = 'not-enrolled'
+    private static readonly EnrolledLine = 'pragmatic-agentd found its enrolment token: starting'
+    private static readonly EnrolledEvent = 'enrolled'
 
     private constructor()
     {
@@ -61,6 +67,14 @@ class AgentMain
         // First of all: the applied configuration (the mounted pragmatic-config-pragmatic-hive-agent) over the environment.
         await ComponentStartConfiguration.ApplyOrExit({ Declaration: HiveAgentComponent.Declaration, Env: process.env })
         const logger = StructuredLogger.ToStdout()
+        // An engine installed by the chart (level connected) starts before the hive is enrolled: no token yet. It waits
+        // ready and idle, re-reading the token file each poll, and starts once enrolment writes it (C3.3).
+        if (!AgentEnrolment.IsEnrolled(process.env))
+        {
+            logger.Info(AgentMain.NotEnrolledLine, { [AgentTicks.EventKey]: AgentMain.NotEnrolledEvent })
+            await new AgentEnrolment().AwaitEnrolled(process.env)
+            logger.Info(AgentMain.EnrolledLine, { [AgentTicks.EventKey]: AgentMain.EnrolledEvent })
+        }
         const settings = AgentSettings.Started(process.env)
         const { RegistryUrl: registryUrl, HiveId: hiveId, Token: token } = settings
 
@@ -122,4 +136,3 @@ class AgentMain
     }
 }
 
-AgentMain.Run().catch(AgentMain.Fail)

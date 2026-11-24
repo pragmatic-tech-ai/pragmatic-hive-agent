@@ -52,6 +52,12 @@ export class AgentSettings
         )
     }
 
+    /** The poll interval the environment sets (or the default): also how often an unenrolled agent re-reads its token. */
+    public static PollMsOf(env: NodeJS.ProcessEnv): number
+    {
+        return AgentSettings.PositiveInt(env, AgentSettings.PollIntervalEnv, AgentSettings.DefaultPollIntervalMs)
+    }
+
     private static Required(env: NodeJS.ProcessEnv, key: string): string
     {
         return AgentSettings.Present(env[key], key)

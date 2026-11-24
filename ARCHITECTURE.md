@@ -2,8 +2,11 @@
 
 | File | Role |
 |---|---|
-| `src/bin/pragmatic-agentd.ts` | The entry: imports `agent-main`. |
-| `src/agent-main.ts` | `AgentMain`: reads the environment, wires the agent and runs the poll loop (doubling backoff on failed ticks, capped). |
+| `src/bin/pragmatic-agentd.ts` | The entry: `AgentCommand.Run(argv)`. |
+| `src/agent-command.ts` | `AgentCommand`: no argument runs the rollout agent; `preflight` runs the engine install's checks and exits 0/1. |
+| `src/agent-main.ts` | `AgentMain`: reads the environment, waits idle while not enrolled (`AgentEnrolment`), wires the agent and runs the poll loop (doubling backoff on failed ticks, capped). |
+| `src/agent-enrolment.ts` | `AgentEnrolment`: whether the hive is enrolled (its channel token present); an unenrolled agent (chart level `connected`) waits ready and idle, re-reading the token file each poll. |
+| `src/preflight/` | The engine chart's preflight hook (`pragmatic-agentd preflight`, C3.2): `Preflight` runs every `IPreflightCheck` (`cluster-version` ≥ 1.29, `storage-class`, `ingress-class`, `dns-name`, `tls`) even after a failure; `PreflightSettings` reads the chart's `PRAGMATIC_PREFLIGHT_*`; `PreflightCli` prints one line per check with its fix and exits 1 on any Fail. |
 | `src/rollout-agent.ts` | `RolloutAgent.Tick`: fetch the target, list the environments, patch the obsolete ones, report the snapshot. |
 | `src/agent-wiring.ts` | `AgentWiring`: the channel URLs, the label selector, deployment to environment state. |
 | `src/k8s-api.ts` | `InClusterK8sApi`: lists and patches deployments through `pragmatic-kube`'s `KubeHttpsTransport` (service account). |
