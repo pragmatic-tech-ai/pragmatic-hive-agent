@@ -1,4 +1,4 @@
-import { HttpAgentChannel } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { HttpAgentChannel, SystemProtocolClock } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import { ComponentReadyFile } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
 import type { ILogger } from '@pragmatic-tech-ai/pragmatic-observability'
 import { InClusterK8sApi } from '../k8s-api.js'
@@ -13,6 +13,12 @@ import { HiveEnrolment } from './hive-enrolment.js'
 import { HiveReporter, ReportedWorkload, type IReportLog } from './hive-reporter.js'
 import { AutoEnrolment, type IAutoEnrolmentLog } from './auto-enrolment.js'
 import { TimerTickDelay } from '../tick-loop.js'
+import { HiveSigning } from '../identity/hive-signing.js'
+import { HiveKeyRecovery } from '../identity/hive-key-recovery.js'
+import { IntentLoop } from '../intents/intent-loop.js'
+import type { IntentPuller } from '../intents/intent-puller.js'
+import type { IntentStore } from '../intents/intent-store.js'
+import { PlatformTrust } from './platform-trust.js'
 
 /** The connected agent's log lines: events and codes only. */
 class ConnectedLog implements IInternalApiLog, IReportLog
@@ -118,9 +124,11 @@ export class ConnectedAgent
             const auto = new AutoEnrolment(kube, settings.Namespace, enrolment, hosted, new AutoEnrolmentLog(logger))
             await auto.UntilEnrolled(settings, new TimerTickDelay())
         }
-        else
+        let api: AgentInternalApi | undefined
+        if (hosted === undefined)
         {
-            await new AgentInternalApi(enrolment, new ConsoleCallerCheck(kube, settings.ConsoleUsername), log).Listen(settings.InternalPort)
+            api = new AgentInternalApi(enrolment, new ConsoleCallerCheck(kube, settings.ConsoleUsername), log)
+            await api.Listen(settings.InternalPort)
             ready.Mark()
             logger.Info(C.StartedLine, { [C.EventKey]: C.StartedEvent })
             if (enrolment.Enrolled === undefined)
@@ -130,8 +138,15 @@ export class ConnectedAgent
         }
         const record = await enrolment.WhenEnrolled()
         logger.Info(C.EnrolledLine, { [C.EventKey]: C.EnrolledEvent, [C.HiveKey]: record.HiveId })
-        const reporter = new HiveReporter({
-            Key: key, Enrolment: record, Channel: new HttpAgentChannel(record.ChannelUrl), Kube: kube, Environments: new InClusterK8sApi(),
+        const clock = new SystemProtocolClock()
+        const channel = new HttpAgentChannel(record.ChannelUrl)
+        const signing = new HiveSigning(key, record.HiveId, kube, settings.Namespace, clock)
+        // Enrolled and Delegated hives are managed by pulled intents (C3.4); a Hosted one by push, so it runs no intent loop.
+        const loop: { Puller: IntentPuller, Store: IntentStore } | undefined = hosted === undefined
+            ? await IntentLoop.Compose({ Settings: settings, Kube: kube, Channel: channel, Signing: signing, Trust: new PlatformTrust(record, state, clock), Clock: clock, Logger: logger, ReportNow: (): Promise<void> => reporter.Tick() })
+            : undefined
+        const reporter: HiveReporter = new HiveReporter({
+            Signing: signing, Intents: loop?.Store, Enrolment: record, Channel: channel, Kube: kube, Environments: new InClusterK8sApi(),
             InstallHive: installHive, EngineVersion: settings.EngineVersion, Log: log,
             Workloads: [
                 new ReportedWorkload(C.ConsoleComponent, settings.Namespace, KubeWorkloadKind.Deployment, settings.ConsoleDeployment),
@@ -139,6 +154,20 @@ export class ConnectedAgent
                 new ReportedWorkload(C.PostgresComponent, settings.Namespace, KubeWorkloadKind.StatefulSet, settings.PostgresStatefulSet),
             ],
         })
+        try
+        {
+            await new HiveKeyRecovery(signing, kube, settings.Namespace).Settle(channel, await reporter.Report())
+        }
+        catch (error)
+        {
+            // An unreachable platform: the pending key stays and the next start settles it.
+            log.Failed(error, 0)
+        }
         void TickLoop.For(settings, reporter).Run()
+        if (loop !== undefined && api !== undefined)
+        {
+            api.AttachIntents(loop.Puller)
+            void TickLoop.For(settings, loop.Puller).Run()
+        }
     }
 }

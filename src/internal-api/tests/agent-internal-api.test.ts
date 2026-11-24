@@ -1,7 +1,15 @@
 import { afterEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { request } from 'node:http'
-import { AgentInternalLink, ConsoleAddress, HiveEnrolmentCall, HiveEnrolmentRefusal, HiveLevel, MessageKind, SigningKeyPair } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import {
+    AgentInternalLink, ConsoleAddress, CreateEnvironment, EnvironmentPurpose, HiveEnrolmentCall, HiveEnrolmentRefusal, HiveLevel, IntentChoice, IntentDecisionCall,
+    IntentDecisionRefusal, IntentInternalLink, IntentProgress, IntentStatus, KeptIntentListing, KeptIntentView, MessageKind, RealmSubject, SigningKeyPair,
+} from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { PlatformTrust } from '../../enrolment/platform-trust.js'
+import { HiveSigning } from '../../identity/hive-signing.js'
+import { IntentAdmissionDecider } from '../../intents/intent-admission-decider.js'
+import { IntentPuller } from '../../intents/intent-puller.js'
+import { IntentStore } from '../../intents/intent-store.js'
 import { FakeAgentChannel, FakeClock, FakePlatform } from '@pragmatic-tech-ai/pragmatic-hive-protocol/testing'
 import { EnrolmentState } from '../../enrolment/enrolment-state.js'
 import { HiveEnrolment } from '../../enrolment/hive-enrolment.js'
@@ -161,5 +169,40 @@ describe('AgentInternalApi', () =>
         }
         const state = [...w.Kube.ConfigMaps.values()].map(map => JSON.stringify(map.Data)).join('')
         assert.ok(!state.includes(body), 'the enrolment ConfigMap holds no key material')
+    })
+
+    it('the intent routes need an enrolled hive and the console, list the kept intents and take a decision by digest', async () =>
+    {
+        const w = await Start()
+        const notYet = await w.Send('GET', IntentInternalLink.IntentsPath, ApiWorld.ConsoleToken)
+        assert.equal(notYet.Status, 409)
+        assert.equal(IntentInternalLink.CodeOf(notYet.Json), IntentDecisionRefusal.NotEnrolled)
+        assert.equal((await w.Send('POST', AgentInternalLink.EnrolPath, ApiWorld.ConsoleToken, w.Call())).Status, 200)
+        const record = w.Enrolment.Enrolled!
+        const signing = new HiveSigning(w.Key, record.HiveId, w.Kube, ApiWorld.Namespace, w.Clock)
+        const trust = new PlatformTrust(record, new EnrolmentState(w.Kube, ApiWorld.Namespace, w.Platform.TrustRoot), w.Clock)
+        const store = new IntentStore(w.Kube, ApiWorld.Namespace)
+        const puller = new IntentPuller({
+            Channel: new FakeAgentChannel(w.Platform), Store: store, Decider: new IntentAdmissionDecider(trust), Executor: { Apply: async intent => IntentStatus.Of(intent.Body.IntentId, IntentProgress.Applied) },
+            Signing: signing, Trust: trust, Log: { Event: () => undefined, Failed: () => undefined },
+        })
+        w.Api.AttachIntents(puller)
+        const digest = w.Platform.PublishIntent(record.HiveId, new CreateEnvironment('prod', EnvironmentPurpose.Runtime, null)).Digest
+        await puller.Tick()
+        const listing = KeptIntentListing.Parse((await w.Send('GET', IntentInternalLink.IntentsPath, ApiWorld.ConsoleToken)).Json)
+        assert.equal(listing.Intents[0]?.IntentDigest, digest)
+        assert.equal(listing.Intents[0]?.Progress, IntentProgress.AwaitingApproval)
+        const approver = RealmSubject.Of('acme', 'u-1')
+        const path = IntentInternalLink.DecisionPath(listing.Intents[0]!.IntentId)
+        const other = await w.Send('POST', path, ApiWorld.OtherToken, JSON.stringify(IntentDecisionCall.Create(digest, IntentChoice.Approve, approver).ToJson()))
+        assert.equal(other.Status, 403)
+        const stale = await w.Send('POST', path, ApiWorld.ConsoleToken, JSON.stringify(IntentDecisionCall.Create('sha256:' + '0'.repeat(64), IntentChoice.Approve, approver).ToJson()))
+        assert.equal(IntentInternalLink.CodeOf(stale.Json), IntentDecisionRefusal.DigestMismatch)
+        assert.equal(IntentInternalLink.CodeOf((await w.Send('POST', path, ApiWorld.ConsoleToken, '{"Decision":"approve","Reason":"x"}')).Json), IntentDecisionRefusal.Malformed)
+        const decided = await w.Send('POST', path, ApiWorld.ConsoleToken, JSON.stringify(IntentDecisionCall.Create(digest, IntentChoice.Reject, approver).ToJson()))
+        assert.equal(decided.Status, 200, decided.Text)
+        assert.equal(KeptIntentView.Parse(decided.Json).Progress, IntentProgress.Rejected)
+        assert.equal(w.Platform.ReceivedOf(MessageKind.IntentDecision).length, 1)
+        assert.equal((await w.Send('GET', IntentInternalLink.DecisionPath('in1'), ApiWorld.ConsoleToken)).Status, 405)
     })
 })

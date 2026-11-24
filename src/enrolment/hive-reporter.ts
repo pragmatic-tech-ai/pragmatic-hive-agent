@@ -1,7 +1,8 @@
 import {
-    ComponentReport, ComponentState, EnvelopeSigner, EnvironmentReadiness, EnvironmentStatus, HiveReport, MessageKind, Participant, ProtocolNames, SystemProtocolClock,
-    type IAgentChannel, type IProtocolClock, type SigningKeyPair,
+    ComponentReport, ComponentState, EnvironmentReadiness, EnvironmentStatus, HiveReport, MessageKind, ProtocolNames,
+    type IAgentChannel, type IntentStatus,
 } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import type { HiveSigning } from '../identity/hive-signing.js'
 import { AgentWiring } from '../agent-wiring.js'
 import { HiveAgentComponent } from '../hive-agent-component.js'
 import type { IServerDeployment } from '../k8s-api.js'
@@ -23,6 +24,12 @@ export interface IEnvironmentLister
     ListServerDeployments(labelSelector: string): Promise<ReadonlyArray<IServerDeployment>>
 }
 
+/** Where the report's intent statuses come from (the kept intents, C3.4). */
+export interface IIntentStatusSource
+{
+    Statuses(max: number): IntentStatus[]
+}
+
 /** What a failed report tick logs (its error's name only). */
 export interface IReportLog
 {
@@ -31,7 +38,8 @@ export interface IReportLog
 
 export interface HiveReporterOptions
 {
-    Key: SigningKeyPair
+    /** The hive's signing identity (its key may rotate, C3.4). */
+    Signing: HiveSigning
     Enrolment: EnrolmentRecord
     Channel: IAgentChannel
     Kube: IHiveKube
@@ -41,7 +49,8 @@ export interface HiveReporterOptions
     EngineVersion: string
     Workloads: readonly ReportedWorkload[]
     Log: IReportLog
-    Clock?: IProtocolClock
+    /** The kept intents' statuses; none before the intent loop runs (a Hosted engine has none). */
+    Intents?: IIntentStatusSource
 }
 
 /**
@@ -54,18 +63,14 @@ export class HiveReporter implements ITickTarget
     public static readonly AgentComponent = HiveAgentComponent.Name
     private static readonly DigestSeparator = '@'
     private static readonly TagSeparator = ':'
-    private readonly clock: IProtocolClock
-    private readonly signer: EnvelopeSigner
 
     public constructor(private readonly options: HiveReporterOptions)
     {
-        this.clock = options.Clock ?? new SystemProtocolClock()
-        this.signer = new EnvelopeSigner(options.Key, Participant.Hive(options.Enrolment.HiveId), this.clock)
     }
 
     public async Tick(): Promise<void>
     {
-        await this.options.Channel.Exchange(this.signer.Sign(MessageKind.HiveReport, Participant.Platform, await this.Report()))
+        await this.options.Channel.Exchange(this.options.Signing.Sign(MessageKind.HiveReport, await this.Report()))
     }
 
     public TickFailed(error: unknown, backoffMs: number): void
@@ -98,7 +103,7 @@ export class HiveReporter implements ITickTarget
             seen.add(name)
             environments.push(new EnvironmentStatus(name, item.ready ? EnvironmentReadiness.Ready : EnvironmentReadiness.NotReady, HiveReporter.VersionOf(item.runningImage)))
         }
-        return HiveReport.Create({ EngineVersion: o.EngineVersion, Components: components, Environments: environments, Intents: [] })
+        return HiveReport.Create({ EngineVersion: o.EngineVersion, Components: components, Environments: environments, Intents: o.Intents?.Statuses(HiveReport.MaxIntents) ?? [] })
     }
 
     /** An image's tag when it is a version (`…:1.2.3`), else none: the report carries no free text. */

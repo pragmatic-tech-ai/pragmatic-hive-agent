@@ -1,4 +1,6 @@
-import { HiveLevels, ProtocolNames, SigningPublicKey, type HiveLevel } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import {
+    HiveLevels, Intent, IntentActionKind, MessageKind, Participant, ProtocolNames, RotationSubject, SignedEnvelope, SigningPublicKey, type HiveLevel,
+} from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import { HiveIdentity } from '../identity/hive-identity.js'
 import type { IHiveKube } from '../kube/hive-kube.js'
 
@@ -10,8 +12,16 @@ export class EnrolmentRecord
         public readonly Tenant: string,
         public readonly Level: HiveLevel,
         public readonly ChannelUrl: string,
-        public readonly TrustRoot: SigningPublicKey)
+        public readonly TrustRoot: SigningPublicKey,
+        /** The trust-root rotation intents (C3.4) that lead from the pinned root to `TrustRoot`, oldest first. */
+        public readonly Rotations: readonly SignedEnvelope[] = [])
     {
+    }
+
+    /** The same enrolment under a new trust root, adopted by the verified rotation intent `rotation`. */
+    public Rotated(root: SigningPublicKey, rotation: SignedEnvelope): EnrolmentRecord
+    {
+        return new EnrolmentRecord(this.HiveId, this.Tenant, this.Level, this.ChannelUrl, root, [...this.Rotations, rotation])
     }
 
     public get TrustRootKeyId(): string
@@ -43,7 +53,8 @@ export class EnrolmentStateUnreadableError extends Error
 export class EnrolmentState
 {
     public static readonly ConfigMapName = 'pragmatic-hive-enrolment'
-    private static readonly Key = { HiveId: 'hiveId', Tenant: 'tenant', Level: 'level', ChannelUrl: 'channelUrl', TrustRootKeyId: 'trustRootKeyId', TrustRoot: 'trustRoot' } as const
+    private static readonly Key = { HiveId: 'hiveId', Tenant: 'tenant', Level: 'level', ChannelUrl: 'channelUrl', TrustRootKeyId: 'trustRootKeyId', TrustRoot: 'trustRoot', Rotations: 'trustRootRotations' } as const
+    private static readonly Base64Url = 'base64url'
 
     /** The trust root the engine was installed with: a stored enrolment under any other root is not this engine's. */
     public constructor(private readonly kube: IHiveKube, private readonly namespace: string, private readonly pinnedTrustRoot: SigningPublicKey)
@@ -80,10 +91,16 @@ export class EnrolmentState
         {
             throw new EnrolmentStateUnreadableError()
         }
-        // The pinned root always wins: a chart upgrade that rotates agent.trustRoot.publicKey moves the enrolled hive to
-        // the new root (kept from here on), and an edited ConfigMap can never make the agent trust another key.
+        // The pinned root wins unless the stored root was reached from it by trust-root rotation intents (C3.4), each
+        // signed by the root before it and addressed to this hive: a chart upgrade that rotates agent.trustRoot.publicKey
+        // moves the enrolled hive to the new root, and an edited ConfigMap can never make the agent trust another key.
+        const rotations = EnrolmentState.RotationsOf(data[K.Rotations])
+        if (!root.Equals(this.pinnedTrustRoot) && rotations !== undefined && EnrolmentState.Leads(this.pinnedTrustRoot, rotations, hiveId)?.Equals(root) === true)
+        {
+            return new EnrolmentRecord(hiveId, tenant, level, channelUrl, root, rotations)
+        }
         const record = new EnrolmentRecord(hiveId, tenant, level, channelUrl, this.pinnedTrustRoot)
-        if (!root.Equals(this.pinnedTrustRoot))
+        if (!root.Equals(this.pinnedTrustRoot) || (rotations?.length ?? 0) > 0)
         {
             await this.Write(record)
         }
@@ -101,6 +118,57 @@ export class EnrolmentState
             [K.ChannelUrl]: record.ChannelUrl,
             [K.TrustRootKeyId]: record.TrustRootKeyId,
             [K.TrustRoot]: record.TrustRoot.ToJson(),
+            [K.Rotations]: JSON.stringify(record.Rotations.map(rotation => rotation.Encode())),
         }, HiveIdentity.Labels, existing?.ResourceVersion)
+    }
+
+    /**
+     * The root `rotations` lead to from `pinned`, or undefined when any link is broken: each must be a platform intent to
+     * this hive, signed under the root before it, rotating the trust root (its new key is the next root).
+     */
+    public static Leads(pinned: SigningPublicKey, rotations: readonly SignedEnvelope[], hiveId: string): SigningPublicKey | undefined
+    {
+        let root = pinned
+        for (const rotation of rotations)
+        {
+            if (rotation.Kind !== MessageKind.Intent || !rotation.Issuer.Equals(Participant.Platform) || !rotation.Audience.Equals(Participant.Hive(hiveId))
+                || rotation.KeyId !== root.KeyId || !root.Verify(rotation.SigningInput(), Buffer.from(rotation.Signature, EnrolmentState.Base64Url)))
+            {
+                return undefined
+            }
+            let intent: Intent
+            try
+            {
+                intent = Intent.Parse(rotation.Body)
+            }
+            catch
+            {
+                return undefined
+            }
+            const action = intent.Action
+            if (action.Kind !== IntentActionKind.Rotate || action.Subject !== RotationSubject.TrustRoot || action.NewTrustRoot === null)
+            {
+                return undefined
+            }
+            root = action.NewTrustRoot
+        }
+        return root
+    }
+
+    private static RotationsOf(raw: string | undefined): SignedEnvelope[] | undefined
+    {
+        if (raw === undefined || raw === '')
+        {
+            return []
+        }
+        try
+        {
+            const texts = JSON.parse(raw) as unknown
+            return Array.isArray(texts) ? texts.map(text => SignedEnvelope.Decode(String(text))) : undefined
+        }
+        catch
+        {
+            return undefined
+        }
     }
 }

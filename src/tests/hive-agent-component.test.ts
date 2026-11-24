@@ -22,6 +22,9 @@ class HiveAgentComponentFixture
         'PRAGMATIC_AGENT_POSTGRES_STATEFULSET', 'PRAGMATIC_AGENT_INTERNAL_PORT',
         // A Hosted agent's (the chart sets them when the host agent places the hive, C5.1): hosted, and its relayed console.
         'PRAGMATIC_AGENT_HOSTED', 'PRAGMATIC_AGENT_CONSOLE_HOST', 'PRAGMATIC_AGENT_CONSOLE_ADDRESS',
+        // Pull-only management's (the chart sets them, C3.4): the console's intent endpoint, the agent's token for it, its
+        // own Deployment and how long a roll may take.
+        'PRAGMATIC_AGENT_CONSOLE_INTENT_URL', 'PRAGMATIC_AGENT_CONSOLE_TOKEN_FILE', 'PRAGMATIC_AGENT_DEPLOYMENT', 'PRAGMATIC_AGENT_ROLLOUT_TIMEOUT_MS',
     ]
 }
 

@@ -24,7 +24,10 @@ export class HiveIdentity
 {
     public static readonly SecretName = 'pragmatic-hive-identity'
     public static readonly KeyName = 'hive-key.pem'
-    public static readonly Labels: Readonly<Record<string, string>> = { 'app.kubernetes.io/part-of': 'pragmatic-engine', 'app.kubernetes.io/component': 'pragmatic-hive-agent' }
+    /** The key a hive key rotation (C3.4) announced and the platform has not acknowledged yet. */
+    public static readonly PendingKeyName = 'hive-key-next.pem'
+    /** managed-by: the agent's admission policy (C3.4) admits only objects it, the console or the chart manages. */
+    public static readonly Labels: Readonly<Record<string, string>> = { 'app.kubernetes.io/part-of': 'pragmatic-engine', 'app.kubernetes.io/component': 'pragmatic-hive-agent', 'app.kubernetes.io/managed-by': 'pragmatic-hive-agent' }
 
     private constructor()
     {
@@ -50,6 +53,38 @@ export class HiveIdentity
             throw new HiveIdentityUnusableError()
         }
         return raced
+    }
+
+    /** The pending next key (a rotation announced, not acknowledged), if any. */
+    public static async Pending(kube: IHiveKube, namespace: string): Promise<SigningKeyPair | undefined>
+    {
+        const pem = (await kube.GetSecretData(namespace, HiveIdentity.SecretName))?.[HiveIdentity.PendingKeyName]
+        if (pem === undefined)
+        {
+            return undefined
+        }
+        try
+        {
+            return SigningKeyPair.FromPrivatePem(pem)
+        }
+        catch
+        {
+            return undefined
+        }
+    }
+
+    /** Keeps `next` beside the current key before it is announced, so a restart mid-rotation still holds it. */
+    public static async WritePending(kube: IHiveKube, namespace: string, current: SigningKeyPair, next: SigningKeyPair): Promise<void>
+    {
+        const H = HiveIdentity
+        await kube.ReplaceSecret(namespace, H.SecretName, { [H.KeyName]: current.PrivatePem(), [H.PendingKeyName]: next.PrivatePem() }, H.Labels)
+    }
+
+    /** Makes `key` the hive key (the platform acknowledged it) and drops any pending one. */
+    public static async Adopt(kube: IHiveKube, namespace: string, key: SigningKeyPair): Promise<void>
+    {
+        const H = HiveIdentity
+        await kube.ReplaceSecret(namespace, H.SecretName, { [H.KeyName]: key.PrivatePem() }, H.Labels)
     }
 
     private static async Load(kube: IHiveKube, namespace: string): Promise<SigningKeyPair | undefined>

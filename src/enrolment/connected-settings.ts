@@ -39,6 +39,14 @@ export class ConnectedSettings
     public static readonly HostedEnv = 'PRAGMATIC_AGENT_HOSTED'
     public static readonly ConsoleHostEnv = 'PRAGMATIC_AGENT_CONSOLE_HOST'
     public static readonly ConsoleAddressEnv = 'PRAGMATIC_AGENT_CONSOLE_ADDRESS'
+    /** C3.4: the console's internal intent endpoint, the agent's token file for it, its own Deployment, the roll deadline. */
+    public static readonly ConsoleIntentUrlEnv = 'PRAGMATIC_AGENT_CONSOLE_INTENT_URL'
+    public static readonly ConsoleTokenFileEnv = 'PRAGMATIC_AGENT_CONSOLE_TOKEN_FILE'
+    public static readonly AgentDeploymentEnv = 'PRAGMATIC_AGENT_DEPLOYMENT'
+    public static readonly RolloutTimeoutEnv = 'PRAGMATIC_AGENT_ROLLOUT_TIMEOUT_MS'
+    public static readonly DefaultConsoleTokenFile = '/var/run/secrets/pragmatic-tenant-admin/token'
+    public static readonly DefaultRolloutTimeoutMs = 600_000
+    private static readonly ConsoleUrl = /^http:\/\/[a-z0-9.-]{1,253}:[0-9]{1,5}$/
     private static readonly HostedValue = 'true'
     private static readonly NotHostedValue = 'false'
     public static readonly DefaultNamespace = 'pragmatic-system'
@@ -66,7 +74,13 @@ export class ConnectedSettings
         public readonly PollMs: number,
         public readonly MaxBackoffMs: number,
         /** Set for a Hosted engine only: the console address it enrols with (AutoEnrolment). */
-        public readonly HostedConsole: ConsoleAddress | undefined)
+        public readonly HostedConsole: ConsoleAddress | undefined,
+        /** The console's internal intent endpoint (`http://<console>-internal.<ns>.svc:7211`); absent on a chart before C3.4. */
+        public readonly ConsoleIntentUrl: string | undefined,
+        public readonly ConsoleTokenFile: string,
+        /** The agent's own Deployment (its own upgrade); absent on a chart before C3.4. */
+        public readonly AgentDeployment: string | undefined,
+        public readonly RolloutTimeoutMs: number)
     {
         Object.freeze(this)
     }
@@ -101,7 +115,41 @@ export class ConnectedSettings
             port === undefined || port === '' ? undefined : C.PortOf(port),
             AgentSettings.PollMsOf(env),
             AgentSettings.MaxBackoffMsOf(env),
-            C.HostedOf(env) ? C.ConsoleAddressOf(env) : undefined)
+            C.HostedOf(env) ? C.ConsoleAddressOf(env) : undefined,
+            C.Optional(env, C.ConsoleIntentUrlEnv, C.ConsoleUrl),
+            env[C.ConsoleTokenFileEnv]?.trim() || C.DefaultConsoleTokenFile,
+            C.Optional(env, C.AgentDeploymentEnv, C.Name),
+            C.TimeoutOf(env))
+    }
+
+    private static Optional(env: NodeJS.ProcessEnv, key: string, pattern: RegExp): string | undefined
+    {
+        const value = env[key]?.trim() ?? ''
+        if (value === '')
+        {
+            return undefined
+        }
+        if (!pattern.test(value))
+        {
+            throw new ConnectedSettingError(key, ConnectedSettings.BadValue)
+        }
+        return value
+    }
+
+    private static TimeoutOf(env: NodeJS.ProcessEnv): number
+    {
+        const C = ConnectedSettings
+        const raw = env[C.RolloutTimeoutEnv]?.trim() ?? ''
+        if (raw === '')
+        {
+            return C.DefaultRolloutTimeoutMs
+        }
+        const value = Number(raw)
+        if (!Number.isSafeInteger(value) || value < 1000)
+        {
+            throw new ConnectedSettingError(C.RolloutTimeoutEnv, C.BadValue)
+        }
+        return value
     }
 
     /** Whether this is a Hosted engine: `PRAGMATIC_AGENT_HOSTED` is `true`; unset or `false` is not; anything else refused. */

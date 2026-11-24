@@ -8,6 +8,46 @@ export class KubeConfigMap
     }
 }
 
+/** One container of a workload's pod template: its name and image. */
+export class KubeContainer
+{
+    public constructor(public readonly Name: string, public readonly Image: string)
+    {
+    }
+}
+
+/** A Deployment's or StatefulSet's pod template containers and rollout status. */
+export class KubeWorkload
+{
+    public constructor(
+        public readonly Containers: readonly KubeContainer[],
+        public readonly Generation: number,
+        public readonly ObservedGeneration: number,
+        public readonly Replicas: number,
+        public readonly UpdatedReplicas: number,
+        public readonly ReadyReplicas: number)
+    {
+    }
+
+    /** Whether the controller has rolled the current template out: observed, every replica updated and ready. */
+    public get RolledOut(): boolean
+    {
+        return this.ObservedGeneration >= this.Generation && this.UpdatedReplicas >= this.Replicas && this.ReadyReplicas >= this.Replicas
+    }
+
+    /** Whether every replica is ready (whatever template). */
+    public get Ready(): boolean
+    {
+        return this.Replicas > 0 && this.ReadyReplicas >= this.Replicas
+    }
+
+    /** The named container, or the first when no name is given. */
+    public Container(name: string | undefined): KubeContainer | undefined
+    {
+        return name === undefined ? this.Containers[0] : this.Containers.find(container => container.Name === name)
+    }
+}
+
 /** What a TokenReview answered about a bearer. */
 export class TokenReviewResult
 {
@@ -36,6 +76,12 @@ export interface IHiveKube
     ReviewToken(token: string, audience: string): Promise<TokenReviewResult>
     /** Whether the Deployment (or StatefulSet) has every replica ready; undefined when it does not exist. */
     WorkloadReady(namespace: string, kind: KubeWorkloadKind, name: string): Promise<boolean | undefined>
+    /** The workload's template containers and rollout status; undefined when it does not exist (C3.4). */
+    GetWorkload(namespace: string, kind: KubeWorkloadKind, name: string): Promise<KubeWorkload | undefined>
+    /** A strategic-merge patch of the workload (an image, a restart annotation). */
+    PatchWorkload(namespace: string, kind: KubeWorkloadKind, name: string, patch: object): Promise<void>
+    /** Replaces the Secret's data (its own identity Secret only, by the agent's Role). */
+    ReplaceSecret(namespace: string, name: string, data: Readonly<Record<string, string>>, labels: Readonly<Record<string, string>>): Promise<void>
 }
 
 export enum KubeWorkloadKind
@@ -46,9 +92,10 @@ export enum KubeWorkloadKind
 
 interface IObjectBody
 {
-    metadata?: { resourceVersion?: string }
+    metadata?: { resourceVersion?: string; generation?: number }
     data?: Record<string, string>
-    status?: { replicas?: number; readyReplicas?: number; authenticated?: boolean; audiences?: string[]; user?: { username?: string } }
+    spec?: { replicas?: number; template?: { spec?: { containers?: { name?: string; image?: string }[] } } }
+    status?: { replicas?: number; readyReplicas?: number; updatedReplicas?: number; observedGeneration?: number; authenticated?: boolean; audiences?: string[]; user?: { username?: string } }
 }
 
 /** IHiveKube over the in-cluster API (the agent's service account). */
@@ -66,6 +113,9 @@ export class InClusterHiveKube extends InClusterK8sApi implements IHiveKube
     private static readonly Post = 'POST'
     private static readonly Put = 'PUT'
     private static readonly Delete = 'DELETE'
+    private static readonly Patch = 'PATCH'
+    private static readonly StrategicMerge = 'application/strategic-merge-patch+json'
+    private static readonly NoText = ''
     private static readonly Json = 'application/json'
     private static readonly Base64 = 'base64'
     private static readonly Utf8 = 'utf8'
@@ -159,14 +209,54 @@ export class InClusterHiveKube extends InClusterK8sApi implements IHiveKube
     public async WorkloadReady(namespace: string, kind: KubeWorkloadKind, name: string): Promise<boolean | undefined>
     {
         const K = InClusterHiveKube
-        const path = K.WorkloadPath.replace(K.NsToken, encodeURIComponent(namespace)).replace(K.KindToken, kind).replace(K.NameToken, encodeURIComponent(name))
-        const body = await this.GetObject(path)
+        const body = await this.GetObject(K.WorkloadOf(namespace, kind, name))
         if (body === undefined)
         {
             return undefined
         }
         const replicas = body.status?.replicas ?? 0
         return replicas > 0 && (body.status?.readyReplicas ?? 0) === replicas
+    }
+
+    public async GetWorkload(namespace: string, kind: KubeWorkloadKind, name: string): Promise<KubeWorkload | undefined>
+    {
+        const K = InClusterHiveKube
+        const body = await this.GetObject(K.WorkloadOf(namespace, kind, name))
+        if (body === undefined)
+        {
+            return undefined
+        }
+        const containers = (body.spec?.template?.spec?.containers ?? []).map(container => new KubeContainer(container.name ?? K.NoText, container.image ?? K.NoText))
+        const status = body.status ?? {}
+        return new KubeWorkload(containers, body.metadata?.generation ?? 0, status.observedGeneration ?? 0, body.spec?.replicas ?? 1, status.updatedReplicas ?? 0, status.readyReplicas ?? 0)
+    }
+
+    public async PatchWorkload(namespace: string, kind: KubeWorkloadKind, name: string, patch: object): Promise<void>
+    {
+        const K = InClusterHiveKube
+        const response = await this.Send(K.Patch, K.WorkloadOf(namespace, kind, name), JSON.stringify(patch), K.StrategicMerge)
+        K.RequireOk(response.status)
+    }
+
+    public async ReplaceSecret(namespace: string, name: string, data: Readonly<Record<string, string>>, labels: Readonly<Record<string, string>>): Promise<void>
+    {
+        const K = InClusterHiveKube
+        const path = K.Named(K.SecretPath, namespace, name)
+        const current = await this.GetObject(path)
+        const encoded: Record<string, string> = {}
+        for (const [key, value] of Object.entries(data))
+        {
+            encoded[key] = Buffer.from(value, K.Utf8).toString(K.Base64)
+        }
+        const metadata = { name, namespace, labels, resourceVersion: current?.metadata?.resourceVersion }
+        const response = await this.Send(K.Put, path, JSON.stringify({ apiVersion: K.V1, kind: K.SecretKind, type: K.OpaqueType, metadata, data: encoded }), K.Json)
+        K.RequireOk(response.status)
+    }
+
+    private static WorkloadOf(namespace: string, kind: KubeWorkloadKind, name: string): string
+    {
+        const K = InClusterHiveKube
+        return K.WorkloadPath.replace(K.NsToken, encodeURIComponent(namespace)).replace(K.KindToken, kind).replace(K.NameToken, encodeURIComponent(name))
     }
 
     private async GetObject(path: string): Promise<IObjectBody | undefined>

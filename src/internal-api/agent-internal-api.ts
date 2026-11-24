@@ -1,6 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { AgentInternalLink, HiveEnrolmentCall, HiveEnrolmentRefusal, ProtocolDecodeError } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import {
+    AgentInternalLink, HiveEnrolmentCall, HiveEnrolmentRefusal, IntentDecisionCall, IntentDecisionRefusal, IntentInternalLink, ProtocolDecodeError,
+} from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { IntentDecisionRefusedError, type IIntentDesk } from '../intents/intent-puller.js'
 import { HiveEnrolmentRefusedError, type HiveEnrolment } from '../enrolment/hive-enrolment.js'
 import type { ConsoleCallerCheck } from './console-caller-check.js'
 
@@ -14,8 +17,10 @@ export interface IInternalApiLog
  * The hive agent's cluster-internal API (C3.3) on port 7210, reached only by the engine's console (a NetworkPolicy
  * fences the port; ConsoleCallerCheck reviews each bearer): `POST /internal/enrol` `{ Code, Level, ConsoleAddress }`
  * enrols the hive and answers its HiveEnrolmentStatus, or `{ error, code }` with a HiveEnrolmentRefusal code; `GET
- * /internal/enrolment` answers the status. Once enrolled, enrolling again is `already-enrolled` and nothing else is
- * served. Every other path or method is 404 / 405.
+ * /internal/enrolment` answers the status. Once enrolled, enrolling again is `already-enrolled`. The intent routes
+ * (C3.4, IntentInternalLink) are served once the hive is enrolled and its intent loop attached (before, `not-enrolled`):
+ * `GET /internal/intents` (the kept intents) and `POST /internal/intents/<id>/decision` (the console's decision, signed
+ * by the hive key and sent to the platform; an approval applies). Every other path or method is 404 / 405.
  */
 export class AgentInternalApi
 {
@@ -43,10 +48,19 @@ export class AgentInternalApi
     private static readonly EndEvent = 'end'
     private static readonly AnyAddress = '0.0.0.0'
 
+    private static readonly DecidedEvent = 'intent-decided'
+    private static readonly DecisionRefusedEvent = 'intent-decision-refused'
     private server: Server | undefined
+    private intents: IIntentDesk | undefined
 
     public constructor(private readonly enrolment: HiveEnrolment, private readonly callers: ConsoleCallerCheck, private readonly log: IInternalApiLog)
     {
+    }
+
+    /** The intent loop of the enrolled hive: from now on the intent routes are served. */
+    public AttachIntents(desk: IIntentDesk): void
+    {
+        this.intents = desk
     }
 
     public Listen(port: number = AgentInternalLink.Port, bind: string = AgentInternalApi.AnyAddress): Promise<void>
@@ -89,8 +103,10 @@ export class AgentInternalApi
         const A = AgentInternalApi
         try
         {
-            const path = (req.url ?? '').split(A.QuerySeparator)[0]
-            const route = path === AgentInternalLink.EnrolPath ? A.Post : path === AgentInternalLink.EnrolmentPath ? A.Get : undefined
+            const path = (req.url ?? '').split(A.QuerySeparator)[0] ?? ''
+            const decisionId = IntentInternalLink.IntentIdOf(path)
+            const route = path === AgentInternalLink.EnrolPath || decisionId !== undefined ? A.Post
+                : path === AgentInternalLink.EnrolmentPath || path === IntentInternalLink.IntentsPath ? A.Get : undefined
             if (route === undefined)
             {
                 req.resume()
@@ -108,6 +124,11 @@ export class AgentInternalApi
                 req.resume()
                 this.log.Event(A.CallerRefusedEvent)
                 A.Refuse(res, HiveEnrolmentRefusal.NotConsole)
+                return
+            }
+            if (path === IntentInternalLink.IntentsPath || decisionId !== undefined)
+            {
+                await this.ServeIntents(req, res, decisionId)
                 return
             }
             if (route === A.Get)
@@ -173,6 +194,65 @@ export class AgentInternalApi
         }
         this.log.Event(A.EnrolledEvent)
         A.Write(res, A.StatusOk, this.enrolment.Status().ToJson())
+    }
+
+    private async ServeIntents(req: IncomingMessage, res: ServerResponse, decisionId: string | undefined): Promise<void>
+    {
+        const A = AgentInternalApi
+        const desk = this.intents
+        if (desk === undefined || this.enrolment.Enrolled === undefined)
+        {
+            req.resume()
+            A.RefuseIntent(res, IntentDecisionRefusal.NotEnrolled)
+            return
+        }
+        if (decisionId === undefined)
+        {
+            req.resume()
+            A.Write(res, A.StatusOk, desk.Listing().ToJson())
+            return
+        }
+        const text = await A.ReadBody(req)
+        if (text === undefined)
+        {
+            A.Write(res, A.StatusTooLarge, A.TooLargeBody)
+            return
+        }
+        let call: IntentDecisionCall
+        try
+        {
+            call = IntentDecisionCall.Parse(JSON.parse(text) as unknown)
+        }
+        catch (error)
+        {
+            if (error instanceof ProtocolDecodeError || error instanceof SyntaxError)
+            {
+                A.RefuseIntent(res, IntentDecisionRefusal.Malformed)
+                return
+            }
+            throw error
+        }
+        try
+        {
+            const view = await desk.Decide(decisionId, call)
+            this.log.Event(A.DecidedEvent, call.Decision)
+            A.Write(res, A.StatusOk, view.ToJson())
+        }
+        catch (error)
+        {
+            if (error instanceof IntentDecisionRefusedError)
+            {
+                this.log.Event(A.DecisionRefusedEvent, error.Code)
+                A.RefuseIntent(res, error.Code)
+                return
+            }
+            throw error
+        }
+    }
+
+    private static RefuseIntent(res: ServerResponse, code: IntentDecisionRefusal): void
+    {
+        AgentInternalApi.Write(res, IntentInternalLink.StatusOf(code), IntentInternalLink.RefusalBody(code))
     }
 
     private static Refuse(res: ServerResponse, code: HiveEnrolmentRefusal): void
