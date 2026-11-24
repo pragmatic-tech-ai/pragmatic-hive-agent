@@ -73,11 +73,14 @@ describe('WorkloadIdentityIssuerCheck', () =>
         assert.deepEqual(fetcher.Asked, [])
         assert.match((await IssuerFixture.Run(RealmSecretsChoice.Aws, 'https://10.0.0.1:6443')).Message, /not a public name/)
         assert.match((await IssuerFixture.Run(RealmSecretsChoice.Aws, 'http://oidc.example.com')).Message, /not an https URL/)
-        for (const internal of ['https://100.64.0.1', 'https://100.127.255.1', 'https://0.0.0.0', 'https://[fe80::1]', 'https://api.localhost', 'https://[::1]'])
+        for (const internal of ['https://kubernetes.default.svc.', 'https://issuer', 'https://[::ffff:a00:1]', 'https://100.64.0.1', 'https://100.127.255.1', 'https://0.0.0.0', 'https://[fe80::1]', 'https://api.localhost', 'https://[::1]'])
         {
             assert.match((await IssuerFixture.Run(RealmSecretsChoice.Aws, internal, fetcher)).Message, /not a public name/, internal)
         }
         assert.deepEqual(fetcher.Asked, [], 'never fetched')
+        const internalKeys = new FakePublicFetch({ [IssuerFixture.Issuer + '/.well-known/openid-configuration']: { Status: 200, Body: { issuer: IssuerFixture.Issuer, jwks_uri: 'https://10.0.0.1:6443/openid/v1/jwks' } } })
+        assert.match((await IssuerFixture.Run(RealmSecretsChoice.Azure, IssuerFixture.Issuer, internalKeys)).Message, /jwks_uri that is not a public https URL/)
+        assert.deepEqual(internalKeys.Asked, [IssuerFixture.Issuer + '/.well-known/openid-configuration'], 'the internal keys are never fetched')
         assert.equal((await IssuerFixture.Run(RealmSecretsChoice.Aws, 'https://100.128.0.1')).Outcome, PreflightOutcome.Fail, 'a public address is fetched (and here not found)')
     })
 

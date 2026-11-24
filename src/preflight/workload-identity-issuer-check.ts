@@ -78,6 +78,11 @@ export class WorkloadIdentityIssuerCheck implements IPreflightCheck
     private static readonly Mismatch = '\'s public discovery document names another issuer'
     private static readonly NoKeys = '\'s public jwks_uri answers no keys'
     private static readonly Close = ')'
+    private static readonly JwksNotPublic = '\'s public discovery document names a jwks_uri that is not a public https URL'
+    private static readonly TrailingDot = /\.$/
+    private static readonly Dot = '.'
+    private static readonly Bracket = '['
+    private static readonly MappedIpv4 = /^\[?::ffff:/i
     private static readonly Unreachable = ' could not be fetched publicly: '
     private static readonly PassInfix = ' is public; '
     private static readonly PassSuffix = ' can exchange this cluster\'s projected tokens'
@@ -107,13 +112,14 @@ export class WorkloadIdentityIssuerCheck implements IPreflightCheck
             return PreflightResults.Fail(W.CheckName, W.IssuerPrefix + issuer + W.NotHttps, W.Fix)
         }
         if (url.protocol !== W.Https) return PreflightResults.Fail(W.CheckName, W.IssuerPrefix + issuer + W.NotHttps, W.Fix)
-        if (W.InternalNames.test(url.hostname) || W.PrivateAddresses.test(url.hostname)) return PreflightResults.Fail(W.CheckName, W.IssuerPrefix + issuer + W.NotPublic, W.Fix)
+        if (!W.IsPublicHost(url.hostname)) return PreflightResults.Fail(W.CheckName, W.IssuerPrefix + issuer + W.NotPublic, W.Fix)
         try
         {
             const discovery = await this.fetcher.Json(issuer.replace(W.Slash, W.Empty) + W.DiscoveryPath)
             if (discovery.Status !== W.Ok) return PreflightResults.Fail(W.CheckName, W.IssuerPrefix + issuer + W.Unfetchable + discovery.Status + W.Close, W.Fix)
             const published = discovery.Body as Discovery | undefined
             if (published?.issuer !== issuer || typeof published.jwks_uri !== 'string') return PreflightResults.Fail(W.CheckName, W.IssuerPrefix + issuer + W.Mismatch, W.Fix)
+            if (!W.IsPublicUrl(published.jwks_uri)) return PreflightResults.Fail(W.CheckName, W.IssuerPrefix + issuer + W.JwksNotPublic, W.Fix)
             const keys = await this.fetcher.Json(published.jwks_uri)
             const list = (keys.Body as { keys?: unknown } | undefined)?.keys
             if (keys.Status !== W.Ok || !Array.isArray(list) || list.length === 0) return PreflightResults.Fail(W.CheckName, W.IssuerPrefix + issuer + W.NoKeys, W.Fix)
@@ -123,5 +129,28 @@ export class WorkloadIdentityIssuerCheck implements IPreflightCheck
             return PreflightResults.Fail(W.CheckName, W.IssuerPrefix + issuer + W.Unreachable + (error instanceof Error ? error.message : String(error)), W.Fix)
         }
         return PreflightResults.Pass(W.CheckName, W.IssuerPrefix + issuer + W.PassInfix + this.option + W.PassSuffix)
+    }
+
+    /** A public host: not internal, private, IPv4-mapped or unspecified; a name (its trailing dot dropped) has at least one dot. */
+    public static IsPublicHost(hostname: string): boolean
+    {
+        const W = WorkloadIdentityIssuerCheck
+        const host = hostname.replace(W.TrailingDot, W.Empty)
+        if (host === W.Empty || W.InternalNames.test(host) || W.PrivateAddresses.test(host) || W.MappedIpv4.test(host)) return false
+        return host.startsWith(W.Bracket) || host.includes(W.Dot)
+    }
+
+    private static IsPublicUrl(text: string): boolean
+    {
+        const W = WorkloadIdentityIssuerCheck
+        try
+        {
+            const url = new URL(text)
+            return url.protocol === W.Https && W.IsPublicHost(url.hostname)
+        }
+        catch
+        {
+            return false
+        }
     }
 }
