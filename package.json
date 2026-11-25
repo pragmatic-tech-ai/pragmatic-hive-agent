@@ -1,6 +1,6 @@
 {
   "name": "@pragmatic-tech-ai/pragmatic-hive-agent",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "description": "The hive agent (pragmatic-agentd): polls the platform agent channel and rolls the hive's environment deployments to their target images.",
   "license": "Apache-2.0",
