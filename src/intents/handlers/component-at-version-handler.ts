@@ -20,6 +20,7 @@ export class ComponentAtVersionHandler
     public static readonly ReleaseRepository = /^((?:ghcr\.io|registry\.pragmatic-tech\.ai)\/pragmatic-tech-ai\/[a-z0-9][a-z0-9._/-]*)(?::[A-Za-z0-9._-]+)?(?:@sha256:[a-f0-9]{64})?$/
     private static readonly DigestSeparator = '@'
     private static readonly ByDigest = /@sha256:[a-f0-9]{64}$/
+    private static readonly HostSeparator = '/'
 
     public constructor(private readonly kube: IHiveKube, private readonly workloads: EngineWorkloads, private readonly watch: RolloutWatch)
     {
@@ -57,7 +58,7 @@ export class ComponentAtVersionHandler
     {
         const found = await this.Find(action.Component)
         // What a revert puts back is read from the ConfigMap: only an image of the same release repository, by digest.
-        if (found === undefined || previous === null || !ComponentAtVersionHandler.ByDigest.test(previous) || ComponentAtVersionHandler.RepositoryOf(previous) !== found.Repository)
+        if (found === undefined || previous === null || !ComponentAtVersionHandler.ByDigest.test(previous) || ComponentAtVersionHandler.PathOf(previous) !== ComponentAtVersionHandler.PathOf(found.Repository))
         {
             return
         }
@@ -73,6 +74,17 @@ export class ComponentAtVersionHandler
         return ComponentAtVersionHandler.ReleaseRepository.exec(image)?.[1] ?? null
     }
 
+    /**
+     * The release repository's path after its host, or null: the two release registries (ghcr.io and
+     * registry.pragmatic-tech.ai, where C3.5 moves the images) hold the same repositories, so an image of either is the
+     * same component's.
+     */
+    public static PathOf(image: string): string | null
+    {
+        const repository = ComponentAtVersionHandler.RepositoryOf(image)
+        return repository === null ? null : repository.slice(repository.indexOf(ComponentAtVersionHandler.HostSeparator))
+    }
+
     private async Find(component: string): Promise<{ Workload: EngineWorkload, Current: KubeWorkload, Repository: string } | undefined>
     {
         const workload = this.workloads.Of(component)
@@ -84,14 +96,14 @@ export class ComponentAtVersionHandler
 
     private static Matching(workload: KubeWorkload, repository: string): KubeContainer[]
     {
-        return [...workload.Containers, ...workload.InitContainers].filter(container => ComponentAtVersionHandler.RepositoryOf(container.Image) === repository)
+        return [...workload.Containers, ...workload.InitContainers].filter(container => ComponentAtVersionHandler.PathOf(container.Image) === ComponentAtVersionHandler.PathOf(repository))
     }
 
     /** Every container and init container running `repository`, to `image` (strategic merge by container name). */
     private static ImagePatch(workload: KubeWorkload, repository: string, image: string): object
     {
         const H = ComponentAtVersionHandler
-        const of = (list: readonly KubeContainer[]): { name: string, image: string }[] => list.filter(container => H.RepositoryOf(container.Image) === repository).map(container => ({ name: container.Name, image }))
+        const of = (list: readonly KubeContainer[]): { name: string, image: string }[] => list.filter(container => H.PathOf(container.Image) === H.PathOf(repository)).map(container => ({ name: container.Name, image }))
         const initContainers = of(workload.InitContainers)
         const spec = initContainers.length > 0 ? { containers: of(workload.Containers), initContainers } : { containers: of(workload.Containers) }
         return { spec: { template: { spec } } }

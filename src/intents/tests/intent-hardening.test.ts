@@ -460,7 +460,7 @@ describe('the report\'s environments come from the console', () =>
             const token = join(dir, 'token')
             writeFileSync(token, 'agent-token\n')
             const calls: Array<{ Url: string, Auth: string | undefined, Method: string }> = []
-            let answer: { status: number, body: unknown } | 'down' = { status: 200, body: { Environments: [{ Name: 'prod', Readiness: 'ready', Version: '0.1.0' }, { Name: 'prod', Readiness: 'ready', Version: null }] } }
+            let answer: { status: number, body: unknown } | 'down' = { status: 200, body: { Environments: [{ Name: 'prod', Readiness: 'ready', Version: '0.1.0' }] } }
             const source = new ConsoleEnvironmentSource('http://console-internal.pragmatic-system.svc:7211', token, async (url, init) =>
             {
                 calls.push({ Url: url, Auth: init.headers['authorization'], Method: init.method })
@@ -477,11 +477,41 @@ describe('the report\'s environments come from the console', () =>
             assert.equal((await source.Environments()).length, 1, 'the last answer stands')
             answer = { status: 200, body: { Environments: [{ Name: 'prod', Readiness: 'ready', Version: '0.1.0', Log: 'free text' }] } }
             assert.equal((await source.Environments()).length, 1, 'not the closed shape: ignored')
+            answer = { status: 200, body: { Environments: [{ Name: 'dev', Readiness: 'ready', Version: null }, { Name: 'dev', Readiness: 'not-ready', Version: null }] } }
+            assert.deepEqual((await source.Environments()).map(env => env.Name), ['prod'], 'a name twice: ignored')
             assert.deepEqual(await new ConsoleEnvironmentSource(undefined, token).Environments(), [])
         }
         finally
         {
             rmSync(dir, { recursive: true, force: true })
         }
+    })
+})
+
+describe('the two release registries are one repository space', () =>
+{
+    it('reads the same component on either release registry, refuses a third host', () =>
+    {
+        const digest = '@sha256:' + 'a'.repeat(64)
+        const H = ComponentAtVersionHandler
+        assert.equal(H.PathOf('ghcr.io/pragmatic-tech-ai/pragmatic-hive-agent' + digest), H.PathOf('registry.pragmatic-tech.ai/pragmatic-tech-ai/pragmatic-hive-agent' + digest))
+        assert.equal(H.PathOf('quay.io/pragmatic-tech-ai/pragmatic-hive-agent' + digest), null)
+        assert.notEqual(H.PathOf('ghcr.io/pragmatic-tech-ai/pragmatic-tenant-admin' + digest), H.PathOf('ghcr.io/pragmatic-tech-ai/pragmatic-hive-agent' + digest))
+    })
+
+    it('reverts across the two registries in both directions, never to a third host', async () =>
+    {
+        const world = await RealWorld.Enrolled()
+        const handler = new ComponentAtVersionHandler(world.Kube, new EngineWorkloads([
+            new EngineWorkload(EngineWorkloads.AgentComponent, RealWorld.Ns, KubeWorkloadKind.Deployment, RealWorld.AgentDeployment, undefined),
+        ]), new RolloutWatch({ TimeoutMs: 10, PollMs: 10, Sleep: async () => undefined }))
+        const action = RealWorld.Component(EngineWorkloads.AgentComponent)
+        const onRegistry = 'registry.pragmatic-tech.ai/pragmatic-tech-ai/pragmatic-hive-agent@sha256:' + '5'.repeat(64)
+        await handler.Revert(action, onRegistry)
+        assert.equal(RealWorld.Image(world, RealWorld.AgentDeployment), onRegistry, 'ghcr.io to registry.pragmatic-tech.ai')
+        await handler.Revert(action, RealWorld.AgentOld)
+        assert.equal(RealWorld.Image(world, RealWorld.AgentDeployment), RealWorld.AgentOld, 'and back')
+        await handler.Revert(action, 'quay.io/pragmatic-tech-ai/pragmatic-hive-agent@sha256:' + '6'.repeat(64))
+        assert.equal(RealWorld.Image(world, RealWorld.AgentDeployment), RealWorld.AgentOld, 'a third host is refused')
     })
 })

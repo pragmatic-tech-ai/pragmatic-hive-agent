@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { EnvironmentReadiness, EnvironmentStatus, HiveReport, ProtocolNames } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { ConsoleEnvironmentListing, ConsoleIntentLink, EnvironmentReadiness, EnvironmentStatus, HiveReport, ProtocolNames } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import { AgentWiring } from '../agent-wiring.js'
 import type { IServerDeployment } from '../k8s-api.js'
 import type { ConsoleFetch } from '../intents/handlers/environment-intent-forwarder.js'
@@ -61,15 +61,14 @@ export class DeploymentEnvironmentSource implements IEnvironmentSource
 /**
  * An Enrolled or Delegated engine's environments, from its console (C3.4 review: no cluster-wide list of Deployments for
  * the agent). The console owns its hive's environments (it creates them, and knows each one's readiness and version), so
- * it is asked over the same internal endpoint the agent forwards environment intents to: `GET /internal/environments` on
- * 7211 with the agent's projected token for audience `pragmatic-tenant-admin`, answered `{ Environments: [{ Name,
- * Readiness, Version }] }` (the report's closed EnvironmentStatus). Reading the known environments' Deployments by name
+ * it is asked over the same internal endpoint the agent forwards environment intents to: ConsoleIntentLink's
+ * EnvironmentsPath on 7211 with the agent's projected token for audience `pragmatic-tenant-admin`, answered a
+ * ConsoleEnvironmentListing (the report's closed EnvironmentStatus, each name once). Reading the known environments' Deployments by name
  * instead would still need their names from somewhere, and would read their specs. While the console cannot answer,
  * the last list it gave is reported (none before the first).
  */
 export class ConsoleEnvironmentSource implements IEnvironmentSource
 {
-    public static readonly Path = '/internal/environments'
     private static readonly Get = 'GET'
     private static readonly AuthorizationHeader = 'authorization'
     private static readonly BearerPrefix = 'Bearer '
@@ -77,8 +76,6 @@ export class ConsoleEnvironmentSource implements IEnvironmentSource
     private static readonly StatusOk = 200
     private static readonly MaxReplyBytes = 262_144
     private static readonly TimeoutMs = 10_000
-    private static readonly EnvironmentsField = 'Environments'
-    private static readonly EntryPath = 'environment'
     private static readonly TrailingSlashes = /\/+$/
     private static readonly NoText = ''
     private last: EnvironmentStatus[] = []
@@ -97,7 +94,7 @@ export class ConsoleEnvironmentSource implements IEnvironmentSource
         try
         {
             const token = readFileSync(this.tokenFile, S.Utf8).trim()
-            const reply = await this.fetcher(this.consoleUrl.replace(S.TrailingSlashes, S.NoText) + S.Path, {
+            const reply = await this.fetcher(this.consoleUrl.replace(S.TrailingSlashes, S.NoText) + ConsoleIntentLink.EnvironmentsPath, {
                 method: S.Get, headers: { [S.AuthorizationHeader]: S.BearerPrefix + token }, signal: AbortSignal.timeout(S.TimeoutMs),
             })
             const text = await reply.text()
@@ -105,22 +102,7 @@ export class ConsoleEnvironmentSource implements IEnvironmentSource
             {
                 return this.last
             }
-            const entries = (JSON.parse(text) as Record<string, unknown>)[S.EnvironmentsField]
-            if (!Array.isArray(entries))
-            {
-                return this.last
-            }
-            const seen = new Set<string>()
-            const environments: EnvironmentStatus[] = []
-            for (const entry of entries.slice(0, HiveReport.MaxEnvironments))
-            {
-                const status = EnvironmentStatus.Parse(entry, S.EntryPath)
-                if (!seen.has(status.Name))
-                {
-                    seen.add(status.Name)
-                    environments.push(status)
-                }
-            }
+            const environments = [...ConsoleEnvironmentListing.Parse(JSON.parse(text) as unknown).Environments]
             this.last = environments
         }
         catch
